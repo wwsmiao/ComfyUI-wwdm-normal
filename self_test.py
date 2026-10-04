@@ -21,7 +21,7 @@ spec.loader.exec_module(mod)
 print("NODE_CLASS_MAPPINGS =", sorted(mod.NODE_CLASS_MAPPINGS))
 print("NODE_DISPLAY_NAME_MAPPINGS =", sorted(mod.NODE_DISPLAY_NAME_MAPPINGS))
 assert "wwdm_TextFolder" in mod.NODE_CLASS_MAPPINGS
-assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 5
+assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 6
 
 FolderNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFolder"]
 ListedNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFileList"]
@@ -116,6 +116,48 @@ for cls in (FolderNode, ListedNode, JoinNode, TrimNode, ShowNode):
     assert "required" in it and cls.RETURN_TYPES and cls.FUNCTION and cls.CATEGORY == "wwdm-normal"
 assert FolderNode.OUTPUT_IS_LIST == (True, True, False)
 print("OK 10 正斜杠路径 + INPUT_TYPES 结构")
+
+# 11) 新增节点：双字符串拼接（两个字符串 -> 一个字符串 + 一个字符串列表）
+PairNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextPairConcat"]
+assert "wwdm_TextPairConcat" in mod.NODE_DISPLAY_NAME_MAPPINGS
+assert PairNode.RETURN_TYPES == ("STRING", "STRING")
+assert PairNode.RETURN_NAMES == ("text", "texts")
+assert PairNode.OUTPUT_IS_LIST == (False, True), "第一个输出必须是单值，第二个输出必须是列表"
+assert PairNode.CATEGORY == "wwdm-normal"
+
+pair = PairNode()
+
+joined, lst = pair.concat_pair("Hello", "World")
+assert joined == "HelloWorld" and lst == ["Hello", "World"], (joined, lst)
+
+joined, lst = pair.concat_pair("Hello", "World", connection=" ")
+assert joined == "Hello World" and lst == ["Hello", "World"]
+
+joined, lst = pair.concat_pair("第一行", "第二行", connection="\\n")
+assert joined == "第一行\n第二行", repr(joined)
+assert lst == ["第一行", "第二行"]
+
+joined, lst = pair.concat_pair("  A  ", "  B  ", connection="-", trim=True)
+assert (joined, lst) == ("A-B", ["A", "B"]), (joined, lst)
+
+joined, lst = pair.concat_pair("只有这一句", "", connection=" | ", skip_empty=True)
+assert (joined, lst) == ("只有这一句", ["只有这一句"]), (joined, lst)
+
+joined, lst = pair.concat_pair("a", "b", connection="", skip_empty=False)
+assert (joined, lst) == ("ab", ["a", "b"])
+
+joined, lst = pair.concat_pair("aa", "bb", uppercase_list=True)
+assert joined == "aabb" and lst == ["AA", "BB"]
+
+# 单一输出校验：text 是 str（不是 list），texts 是 list
+joined, lst = pair.concat_pair("x", "y")
+assert isinstance(joined, str) and isinstance(lst, list) and len(lst) == 2
+
+# 上游误接列表输入时取第一项，不报错
+joined, lst = pair.concat_pair(["first", "second"], "B")
+assert (joined, lst) == ("firstB", ["first", "B"]), (joined, lst)
+
+print("OK 11 双字符串拼接（新节点）:", pair.concat_pair("Hello", "World", connection=" "))
 
 shutil.rmtree(root, ignore_errors=True)
 print("\n全部自检通过 ✔")

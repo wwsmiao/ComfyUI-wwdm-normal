@@ -138,6 +138,22 @@ def _first(value, default=""):
     return default if value is None else value
 
 
+def _unescape(text):
+    """把用户输入的 \\n \\t \\r \\\\ 转成真实字符，便于在单行输入框里写换行。"""
+    out = []
+    i = 0
+    table = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text) and text[i + 1] in table:
+            out.append(table[text[i + 1]])
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 # =========================================================================
 # 1. wwdm_TextFolder - 读取文件夹中的所有文本
 # =========================================================================
@@ -449,6 +465,99 @@ class WWDMTextJoin:
         suf = str(_first(suffix, ""))
 
         return (pre + sep.join(items) + suf,)
+
+
+# =========================================================================
+# 3-1. wwdm_TextPairConcat - 两个字符串拼接
+# =========================================================================
+class WWDMTextPairConcat:
+    """
+    双字符串拼接节点
+
+    功能说明：
+        接收两个字符串，拼接输出：
+          - 输出1 text  ：一个字符串，即 A 与 B 拼接后的结果；
+          - 输出2 texts ：一个字符串列表，即 [A, B]（不拼接，按顺序分成两项）。
+
+    参数说明：
+        text_a        : 字符串 A（可连接上游 STRING；若上游是列表则取第一项）。
+        text_b        : 字符串 B（同上）。
+        connection    : A 与 B 之间的连接符，默认空字符串。
+                        可直接写 \\n / \\t / \\r / \\\\ 表示换行、制表符等。
+        trim          : 拼接前是否去除 A、B 各自的首尾空白。
+        skip_empty    : 某一项为空时是否忽略它（只用另一项，不产生多余连接符）。
+        uppercase_list: 列表输出是否转为大写。
+
+    输出说明：
+        text  : STRING，拼接结果。
+        texts : STRING 列表，[A, B] 两项（受 trim / skip_empty / uppercase_list 影响）。
+
+    使用示例：
+        示例1 - 基础拼接：
+            text_a: "Hello"  text_b: "World"  connection: " "
+            text 结果: "Hello World"
+            texts 结果: ["Hello", "World"]
+
+        示例2 - 换行拼接：
+            text_a: "第一行"  text_b: "第二行"  connection: "\\n"
+            text 结果: "第一行\\n第二行"
+            texts 结果: ["第一行", "第二行"]
+
+        示例3 - 忽略空项：
+            text_a: "只有这一句"  text_b: ""  connection: " | "  skip_empty: true
+            text 结果: "只有这一句"
+            texts 结果: ["只有这一句"]
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text_a": ("STRING", {"multiline": True, "default": ""}),
+                "text_b": ("STRING", {"multiline": True, "default": ""}),
+            },
+            "optional": {
+                "connection": ("STRING", {"multiline": False, "default": ""}),
+                "trim": ("BOOLEAN", {"default": False}),
+                "skip_empty": ("BOOLEAN", {"default": False}),
+                "uppercase_list": ("BOOLEAN", {"default": False}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("text", "texts")
+    OUTPUT_IS_LIST = (False, True)
+    FUNCTION = "concat_pair"
+    CATEGORY = "wwdm-normal"
+    DESCRIPTION = "两个字符串拼接：输出一个字符串和一个字符串列表。"
+
+    def concat_pair(
+        self,
+        text_a,
+        text_b,
+        connection="",
+        trim=False,
+        skip_empty=False,
+        uppercase_list=False,
+    ):
+        a = "" if _first(text_a, "") is None else str(_first(text_a, ""))
+        b = "" if _first(text_b, "") is None else str(_first(text_b, ""))
+
+        if bool(_first(trim, False)):
+            a = a.strip()
+            b = b.strip()
+
+        parts = [a, b]
+        if bool(_first(skip_empty, False)):
+            parts = [p for p in parts if p != ""]
+
+        sep = _unescape(str(_first(connection, "")))
+        joined = sep.join(parts)
+
+        if bool(_first(uppercase_list, False)):
+            parts = [p.upper() for p in parts]
+
+        return (joined, parts)
 
 
 # =========================================================================

@@ -30,6 +30,7 @@ git clone https://github.com/wwsmiao/ComfyUI-wwdm-normal.git
 | `wwdm_TextFolder` | 文本文件夹读取 (wwdm) | **核心节点**：文件夹路径 → 字符串列表 |
 | `wwdm_TextFileList` | 文本文件列表 (wwdm) | 文件夹路径 → 文件路径列表 |
 | `wwdm_TextJoin` | 文本列表连接 (wwdm) | 字符串列表 → 单个字符串 |
+| `wwdm_TextPairConcat` | 双字符串拼接 (wwdm) | 两个字符串 → 一个字符串 + 一个字符串列表 |
 | `wwdm_TextTrimEach` | 文本列表逐条处理 (wwdm) | 字符串列表 → 处理后的字符串列表 |
 | `wwdm_TextShow` | 文本预览 (wwdm) | 打印预览并原样传递 |
 
@@ -75,6 +76,46 @@ texts     = ["第一个", "第二个"]
 filenames = ["a.txt", "b.txt"]
 count     = 2
 ```
+
+## 节点：双字符串拼接（wwdm_TextPairConcat）
+
+对两个字符串进行拼接，**同时输出一个字符串和一个字符串列表**。
+
+### 输入
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `text_a` | STRING | 空 | 字符串 A（可连上游；上游是列表时取第一项） |
+| `text_b` | STRING | 空 | 字符串 B（同上） |
+| `connection` | STRING | 空 | A 与 B 之间的连接符，可直接写 `\n` / `\t` / `\r` / `\\` |
+| `trim` | BOOLEAN | false | 拼接前是否去除 A、B 各自首尾空白 |
+| `skip_empty` | BOOLEAN | false | 某侧为空时忽略它，避免产生多余连接符 |
+| `uppercase_list` | BOOLEAN | false | 列表输出是否转为大写 |
+
+### 输出
+
+| 输出 | 类型 | 说明 |
+| --- | --- | --- |
+| `text` | STRING（单值） | A + connection + B 的拼接结果 |
+| `texts` | STRING（**列表**） | `[A, B]` 两项，按顺序、不拼接 |
+
+### 示例
+
+```
+text_a: "Hello"   text_b: "World"   connection: " "
+text  = "Hello World"
+texts = ["Hello", "World"]
+
+text_a: "第一行"  text_b: "第二行"  connection: "\n"
+text  = "第一行\n第二行"
+texts = ["第一行", "第二行"]
+
+text_a: "只有这一句"  text_b: ""  connection: " | "  skip_empty: true
+text  = "只有这一句"
+texts = ["只有这一句"]
+```
+
+> 注意：`texts` 是列表输出。接到普通 STRING 输入时会按 ComfyUI 规则逐项广播（下游执行 2 次）；要合并成一条文本，请接 `文本列表连接 (wwdm)` 节点。
 
 ## 用法说明
 

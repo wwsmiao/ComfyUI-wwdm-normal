@@ -1,0 +1,40 @@
+{
+  "last_node_id": 1,
+  "last_link_id": 0,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "wwdm_TextFolder",
+      "pos": [120, 120],
+      "size": [360, 260],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        { "name": "texts", "type": "STRING", "links": null, "slot_index": 0 },
+        { "name": "filenames", "type": "STRING", "links": null, "slot_index": 1 },
+        { "name": "count", "type": "INT", "links": null, "slot_index": 2 }
+      ],
+      "properties": { "Node name for S&R": "wwdm_TextFolder" },
+      "widgets_values": [
+        "E:\\ComfyUI\\input\\prompts",
+        "txt",
+        "name_asc",
+        false,
+        "auto",
+        "rstrip",
+        true,
+        false,
+        true,
+        0,
+        false
+      ]
+    }
+  ],
+  "links": [],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

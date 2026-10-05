@@ -23,7 +23,7 @@ spec.loader.exec_module(mod)
 print("NODE_CLASS_MAPPINGS =", sorted(mod.NODE_CLASS_MAPPINGS))
 print("NODE_DISPLAY_NAME_MAPPINGS =", sorted(mod.NODE_DISPLAY_NAME_MAPPINGS))
 assert "wwdm_TextFolder" in mod.NODE_CLASS_MAPPINGS
-assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 8
+assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 9
 
 FolderNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFolder"]
 ListedNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFileList"]
@@ -306,6 +306,90 @@ finally:
     os.environ.pop("WWDM_AUDIO_NO_PLAY", None)
 
 print("OK 13 播放音频（新节点）: 路径解析/任意输入提取/试运行播放 均正常")
+
+# 14) 新增节点：保存文本为 txt（字符串 -> txt，文件名可自定义，默认 1-n）
+SaveNode = mod.NODE_CLASS_MAPPINGS["wwdm_SaveText"]
+assert "wwdm_SaveText" in mod.NODE_DISPLAY_NAME_MAPPINGS
+assert SaveNode.RETURN_TYPES == ("STRING", "INT", "STRING")
+assert SaveNode.RETURN_NAMES == ("file_paths", "count", "save_dir")
+assert SaveNode.OUTPUT_IS_LIST == (True, False, False)
+assert SaveNode.OUTPUT_NODE is True, "保存节点必须是输出节点，否则没有下游连线时不会执行"
+assert SaveNode.CATEGORY == "wwdm-normal"
+assert SaveNode.INPUT_TYPES()["required"]["text"][0] == "STRING"
+
+save_dir = os.path.join(root, "saved")
+save = SaveNode()
+
+# 14.1 默认命名：1.txt、2.txt、3.txt
+paths, count, out_dir = save.save_text("第一条内容", save_dir=save_dir)
+assert count == 1 and paths[0].endswith(os.sep + "1.txt"), (paths, count)
+assert open(paths[0], encoding="utf-8").read() == "第一条内容"
+paths, count, out_dir = save.save_text("第二条内容", save_dir=save_dir)
+assert count == 1 and paths[0].endswith(os.sep + "2.txt"), paths
+paths, count, _ = save.save_text(["A", "B"], save_dir=save_dir)      # 列表输入 -> 多个文件
+assert count == 2 and [os.path.basename(p) for p in paths] == ["3.txt", "4.txt"], paths
+assert open(os.path.join(save_dir, "4.txt"), encoding="utf-8").read() == "B"
+
+# 14.2 自定义名称：模板 {n:03d}
+paths, count, _ = save.save_text("模板内容", save_dir=save_dir, name_pattern="prompt_{n:03d}")
+assert os.path.basename(paths[0]) == "prompt_001.txt", paths
+paths, count, _ = save.save_text("模板内容2", save_dir=save_dir, name_pattern="prompt_{n:03d}",
+                                 continue_numbering=False, overwrite=True)
+assert os.path.basename(paths[0]) == "prompt_001.txt", paths
+
+# 14.3 前缀 / 后缀 / 补零（续号按各自命名独立计算，不与 1.txt 系列混在一起）
+paths, count, _ = save.save_text("前缀", save_dir=save_dir, prefix="note_", suffix="_end")
+assert os.path.basename(paths[0]) == "note_1_end.txt", paths
+paths, count, _ = save.save_text("补零", save_dir=save_dir, prefix="z", number_format="00000",
+                                 continue_numbering=False)
+assert os.path.basename(paths[0]) == "z00001.txt", paths
+paths, count, _ = save.save_text("自定义位宽", save_dir=save_dir, prefix="w", number_format="custom",
+                                 number_width=4, continue_numbering=False)
+assert os.path.basename(paths[0]) == "w0001.txt", paths
+
+# 14.4 续号：不覆盖已有文件
+paths, count, _ = save.save_text("续号", save_dir=save_dir, prefix="note_", suffix="_end",
+                                 continue_numbering=True)
+assert os.path.basename(paths[0]) == "note_2_end.txt", paths
+paths, count, _ = save.save_text("模板续号", save_dir=save_dir, name_pattern="prompt_{n:03d}",
+                                 continue_numbering=True)
+assert os.path.basename(paths[0]) == "prompt_002.txt", paths
+
+# 14.5 overwrite=False 时同编号不覆盖，自动顺延
+before = open(os.path.join(save_dir, "1.txt"), encoding="utf-8").read()
+paths, count, _ = save.save_text("不应覆盖", save_dir=save_dir, start_index=1,
+                                 continue_numbering=False, overwrite=False)
+assert os.path.basename(paths[0]) != "1.txt", paths
+assert open(os.path.join(save_dir, "1.txt"), encoding="utf-8").read() == before
+
+# 14.6 start_index 与 overwrite=True
+paths, count, _ = save.save_text("起始编号", save_dir=save_dir, start_index=100,
+                                 continue_numbering=False)
+assert os.path.basename(paths[0]) == "100.txt", paths
+
+# 14.7 编码与末尾换行
+paths, count, _ = save.save_text("中文编码测试", save_dir=save_dir, prefix="gbk_",
+                                 encoding="gbk", continue_numbering=False)
+with open(paths[0], "rb") as fh:
+    assert fh.read().decode("gbk") == "中文编码测试"
+paths, count, _ = save.save_text("换行测试", save_dir=save_dir, prefix="nl_", add_newline=True,
+                                 continue_numbering=False)
+assert open(paths[0], encoding="utf-8").read() == "换行测试\n"
+
+# 14.8 空字符串也要落盘（生成空文件）
+paths, count, _ = save.save_text("", save_dir=save_dir, prefix="empty_", continue_numbering=False)
+assert count == 1 and os.path.getsize(paths[0]) == 0
+
+# 14.9 默认目录（不传 save_dir 时用 ComfyUI output / 当前目录，不应报错）
+paths, count, out_dir = save.save_text("默认目录", prefix="defaultdir_")
+assert count == 1 and os.path.isfile(paths[0])
+os.remove(paths[0])
+
+# 14.10 非法目录 -> 安全返回，不抛异常
+paths, count, _ = save.save_text("x", save_dir=os.path.join(root, "01_utf8.txt", "sub"))
+assert paths == [] and count == 0
+
+print("OK 14 保存文本为 txt（新节点）: 默认 1-n 命名 / 自定义模板 / 续号 / 编码 均正常")
 
 shutil.rmtree(root, ignore_errors=True)
 print("\n全部自检通过 ✔")

@@ -35,6 +35,7 @@ git clone https://github.com/wwsmiao/ComfyUI-wwdm-normal.git
 | `wwdm_TextShow` | 文本预览 (wwdm) | 打印预览并原样传递 |
 | `wwdm_ImageFolder` | 图片文件夹读取 (wwdm) | 文件夹路径 → **图片列表** |
 | `wwdm_AudioPlay` | 播放音频 (wwdm) | **任意输入** → 播放指定位置的音效/音乐 |
+| `wwdm_SaveText` | 保存文本 (wwdm) | 字符串 → 保存为 txt，**文件名可自定义，默认 1.txt、2.txt……** |
 
 ## 核心节点：文本文件夹读取（wwdm_TextFolder）
 
@@ -213,12 +214,67 @@ count     = 4
 - 文件损坏或格式不支持时返回 `played = false` 并在 `message` 给出原因，**不会中断工作流**。
 - 自动化测试可用环境变量 `WWDM_AUDIO_NO_PLAY=1` 只解析路径、不出声。
 
+## 节点：保存文本（wwdm_SaveText）
+
+**输入字符串，保存为 txt 文本；文件名可自定义，默认按 `1.txt`、`2.txt`…… 的数字顺序命名。**
+
+### 输入
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `text` | STRING | 空 | 要保存的字符串；接字符串列表时**每个字符串保存为一个 txt** |
+| `save_dir` | STRING | 空 | 保存目录。留空 = ComfyUI 的 `output` 目录；相对路径 = 相对 `output`（如 `prompts` → `output/prompts`）；也可填绝对路径 |
+| `name_pattern` | STRING | 空 | 自定义文件名模板，支持 `{n}` 与 `{n:03d}`。例：`prompt_{n:03d}` → `prompt_001.txt` |
+| `prefix` / `suffix` | STRING | 空 | 文件名前缀 / 后缀（`name_pattern` 留空时生效，编号在中间） |
+| `number_format` | 下拉 | `plain` | `plain`=1,2,10；`00000`=00001…；`custom`=用 `number_width` 指定位数 |
+| `number_width` | INT | 3 | `custom` 时的补零位数 |
+| `start_index` | INT | 1 | 起始编号 |
+| `continue_numbering` | BOOLEAN | true | 从目录中已有同命名文件的最大编号往后接，避免覆盖 |
+| `overwrite` | BOOLEAN | false | 同名是否覆盖；关闭时自动顺延到没用过的编号 |
+| `encoding` | 下拉 | `utf-8` | `utf-8` / `utf-8-sig` / `gbk` / `gb18030` |
+| `add_newline` | BOOLEAN | false | 是否在文本末尾补一个换行 |
+
+### 输出
+
+| 输出 | 类型 | 说明 |
+| --- | --- | --- |
+| `file_paths` | STRING（列表） | 保存后的 txt 完整路径 |
+| `count` | INT | 保存的文件数量 |
+| `save_dir` | STRING | 实际保存目录 |
+
+### 示例
+
+```
+示例1 - 默认数字命名：
+    text: "你好世界"                 save_dir: (留空)
+    结果: output\1.txt  →  下一批自动是 2.txt、3.txt……
+
+示例2 - 自定义名称：
+    text: "提示词内容"               name_pattern: "prompt_{n:03d}"
+    结果: output\prompt_001.txt
+
+示例3 - 前缀 + 智能续号：
+    text: "第一条"                   prefix: "note_"   continue_numbering: true
+    结果: 已有 note_1_end.txt 时保存为 note_2_end.txt（不覆盖）
+
+示例4 - 字符串列表批量落盘：
+    text <- 文本文件夹读取.texts     prefix: "list_"
+    结果: list_1.txt、list_2.txt…… 每个字符串一个文件
+```
+
+### 说明
+
+- 本节点是**输出节点**（`OUTPUT_NODE = True`）：下游不连线也会执行保存。
+- 续号按**各自命名规则独立计算**：`1.txt` 系列与 `note_*.txt` 系列互不影响。
+- 目录不存在会自动创建；某个文件写入失败只跳过该文件并打印原因，不中断工作流。
+
 ## 用法说明
 
 - `texts` 是**字符串列表**输出。想把它合并成一段文本，接到 `文本列表连接 (wwdm)` 节点即可（分隔符默认换行）。
 - **核心节点**：文件夹 → 字符串列表：`wwdm_TextFolder`
 - **图片节点**：文件夹 → 图片列表：`wwdm_ImageFolder`
 - **音频节点**：任意输入 → 播放音效/音乐：`wwdm_AudioPlay`
+- **保存节点**：字符串 → txt（文件名自定义，默认 1-n）：`wwdm_SaveText`
 - 想查看读取结果，接到 `文本预览 (wwdm)` 节点，控制台会打印每条内容（超长自动截断）。
 - 排序默认 `name_natural`（自然排序），`1, 2, 10` 顺序正确；需要传统字符串排序时选 `name_asc`。
   （注：两个文本节点为保持原有行为，默认仍是 `name_asc`，但下拉里已提供 `name_natural` 选项。）

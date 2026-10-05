@@ -1016,3 +1016,266 @@ class WWDMAudioPlay:
 
         message = " | ".join(logs) if logs else "未执行播放"
         return ([success > 0], [resolved], [message])
+
+
+# =========================================================================
+# 8. wwdm_SaveText - 把字符串保存为 txt 文本
+# =========================================================================
+# 文件名里的编号占位符（支持 {n} 与 {n:03d} 这类格式）
+_NUMBER_PLACEHOLDER = re.compile(r"\{n(?::(\d+)d)?\}")
+
+
+def _resolve_output_dir(save_dir=""):
+    """决定保存目录。
+
+    save_dir 为空 -> ComfyUI 的 output 目录；相对路径 -> 相对 output 目录；绝对路径 -> 原样使用。
+    """
+    custom = str(save_dir or "").strip().strip('"')
+    base = None
+    try:
+        import folder_paths  # ComfyUI 自带；脱离 ComfyUI 运行时可能不存在
+        base = folder_paths.get_output_directory()
+    except Exception:
+        base = None
+
+    if not custom:
+        return base or os.path.abspath("output")
+    expanded = os.path.expanduser(os.path.expandvars(custom))
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.join(base or os.path.abspath("output"), expanded)
+
+
+def _format_number(number, number_format="plain", width=0):
+    """按格式生成编号文本。"""
+    if number_format == "00000":
+        return "%05d" % number
+    if number_format == "custom" and width > 0:
+        return ("%0" + str(int(width)) + "d") % number
+    return str(number)
+
+
+def _build_filename(number, prefix="", suffix="", name_pattern="", number_format="plain", width=0):
+    """根据设置生成文件名（含 .txt 后缀；name_pattern 里没有 {n} 时会自动补编号）。"""
+    pattern = str(name_pattern or "").strip()
+    prefix = str(prefix or "")
+    suffix = str(suffix or "")
+    token = _format_number(number, number_format, width)
+
+    if pattern:
+        if _NUMBER_PLACEHOLDER.search(pattern):
+            def _replace(match):
+                width_value = int(match.group(1)) if match.group(1) else int(width or 0)
+                return ("%0" + str(width_value) + "d") % number if width_value > 0 else str(number)
+            name = _NUMBER_PLACEHOLDER.sub(_replace, pattern)
+        else:
+            name = "%s_%s" % (pattern, token)
+    else:
+        name = "%s%s%s" % (prefix, token, suffix)
+
+    if not name.lower().endswith(".txt"):
+        name += ".txt"
+    return name
+
+
+def _scan_existing_numbers(directory, prefix="", suffix="", name_pattern=""):
+    """扫描目录里已存在的编号，返回最大编号（没有则返回 0）。"""
+    if not os.path.isdir(directory):
+        return 0
+
+    pattern = str(name_pattern or "").strip()
+    prefix = str(prefix or "")
+    suffix = str(suffix or "")
+    highest = 0
+
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return 0
+
+    for entry in entries:
+        if not entry.lower().endswith(".txt"):
+            continue
+        stem = entry[:-4]
+
+        if pattern:
+            # 先把编号占位符换成捕获组，再对字面部分转义（顺序不能反，否则 \ 会把 {} 也转义掉）
+            regex = _NUMBER_PLACEHOLDER.sub("\x00", pattern)
+            regex = re.escape(regex).replace("\x00", r"(\d+)")
+            match = re.fullmatch(regex, stem)
+            if not match:
+                continue
+            try:
+                highest = max(highest, int(match.group(1)))
+            except (ValueError, IndexError):
+                continue
+        else:
+            if prefix and not stem.startswith(prefix):
+                continue
+            if suffix and not stem.endswith(suffix):
+                continue
+            middle = stem[len(prefix): len(stem) - len(suffix) if suffix else len(stem)]
+            if middle.isdigit():
+                highest = max(highest, int(middle))
+
+    return highest
+
+
+class WWDMSaveText:
+    """
+    保存文本节点
+
+    功能说明：
+        把输入字符串保存为 txt 文本文件。保存的文件名可由用户自定义，
+        默认按 1、2、3…… 的数字顺序命名（1.txt、2.txt、……）。
+        输入是字符串列表时，每个字符串分别保存为一个 txt 文件。
+
+    参数说明：
+        text        : 字符串（或字符串列表）。
+        save_dir    : 保存目录。留空 = ComfyUI 的 output 目录；
+                      相对路径 = 相对 output 目录（如 "prompts" -> output/prompts）；
+                      也可以填绝对路径。
+        name_pattern: 自定义文件名模板，支持 {n} 编号占位符与 {n:03d} 补零写法。
+                      示例：out_{n:03d} -> out_001.txt、out_002.txt
+                      留空时使用下面的 prefix + 编号 + suffix 组合。
+        prefix      : 文件名前缀（name_pattern 留空时生效）。
+        suffix      : 文件名后缀（name_pattern 留空时生效，编号在中间）。
+        number_format : 编号写法。plain = 1、2、10；00000 = 00001、00002；custom = 用 number_width 指定补零位数。
+        number_width  : number_format=custom 时的补零位数。
+        start_index : 起始编号（默认 1）。
+        continue_numbering : 是否从目录里已有文件的最大编号继续，避免覆盖已有文件。
+        overwrite   : 同名文件是否直接覆盖（关闭时会自动往后找一个没用过的编号）。
+        encoding    : 文本编码，utf-8 / utf-8-sig / gbk / gb18030。
+        add_newline : 是否在文本末尾补一个换行。
+
+    输出说明：
+        file_paths : STRING 列表，保存后的 txt 完整路径。
+        count      : INT，保存的文件数量。
+        save_dir   : STRING，实际保存目录。
+
+    使用示例：
+        示例1 - 默认数字命名：
+            text: "你好世界"
+            save_dir 留空
+            结果: output/1.txt（内容是"你好世界"）…… 下一批是 2.txt
+
+        示例2 - 自定义名称：
+            text: "提示词内容"  name_pattern: "prompt_{n:03d}"
+            结果: output/prompt_001.txt
+
+        示例3 - 前缀 + 智能续号：
+            text: "第一条"  prefix: "note_"  continue_numbering: true
+            结果: output/note_1.txt（已有 note_5.txt 时则保存为 note_6.txt）
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": ("STRING", {"multiline": True, "default": "", "forceInput": True}),
+                "save_dir": ("STRING", {"multiline": False, "default": ""}),
+            },
+            "optional": {
+                "name_pattern": ("STRING", {"multiline": False, "default": ""}),
+                "prefix": ("STRING", {"multiline": False, "default": ""}),
+                "suffix": ("STRING", {"multiline": False, "default": ""}),
+                "number_format": (["plain", "00000", "custom"], {"default": "plain"}),
+                "number_width": ("INT", {"default": 3, "min": 1, "max": 12, "step": 1}),
+                "start_index": ("INT", {"default": 1, "min": 0, "max": 999999999, "step": 1}),
+                "continue_numbering": ("BOOLEAN", {"default": True}),
+                "overwrite": ("BOOLEAN", {"default": False}),
+                "encoding": (["utf-8", "utf-8-sig", "gbk", "gb18030"], {"default": "utf-8"}),
+                "add_newline": ("BOOLEAN", {"default": False}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "INT", "STRING")
+    RETURN_NAMES = ("file_paths", "count", "save_dir")
+    OUTPUT_IS_LIST = (True, False, False)
+    OUTPUT_NODE = True  # 属于"输出节点"：即使下游没有连线，也要执行保存
+    FUNCTION = "save_text"
+    CATEGORY = "wwdm-normal"
+    DESCRIPTION = "把字符串保存为 txt 文本，文件名可自定义，默认 1.txt、2.txt……"
+
+    def save_text(
+        self,
+        text,
+        save_dir="",
+        name_pattern="",
+        prefix="",
+        suffix="",
+        number_format="plain",
+        number_width=3,
+        start_index=1,
+        continue_numbering=True,
+        overwrite=False,
+        encoding="utf-8",
+        add_newline=False,
+    ):
+        # 输入可能是列表（解包成多条文本）
+        items = list(text) if isinstance(text, (list, tuple)) else [text]
+        items = ["" if item is None else str(item) for item in items]
+
+        name_pattern = str(_first(name_pattern, "") or "")
+        prefix = str(_first(prefix, "") or "")
+        suffix = str(_first(suffix, "") or "")
+        number_format = str(_first(number_format, "plain") or "plain")
+        number_width = int(_first(number_width, 3) or 3)
+        start_index = int(_first(start_index, 1) or 0)
+        continue_numbering = bool(_first(continue_numbering, True))
+        overwrite = bool(_first(overwrite, False))
+        encoding = str(_first(encoding, "utf-8") or "utf-8")
+        add_newline = bool(_first(add_newline, False))
+        raw_save_dir = str(_first(save_dir, "") or "")
+
+        directory = _resolve_output_dir(raw_save_dir)
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except Exception as exc:
+            message = "无法创建保存目录 %s: %s" % (directory, exc)
+            print("[Comfyui-wwdm-normal] " + message)
+            return ([], 0, directory)
+
+        number = max(0, start_index)
+        if continue_numbering:
+            existing = _scan_existing_numbers(directory, prefix, suffix, name_pattern)
+            number = max(number, existing + 1)
+
+        saved = []
+        failed = []
+
+        for content in items:
+            if add_newline and content and not content.endswith("\n"):
+                content = content + "\n"
+
+            target = os.path.join(directory, _build_filename(
+                number, prefix, suffix, name_pattern, number_format, number_width))
+
+            if not overwrite:
+                # 同名文件已存在时，往后找一个没用过的编号，避免覆盖别人
+                guard = 0
+                while os.path.exists(target) and guard < 100000:
+                    number += 1
+                    guard += 1
+                    target = os.path.join(directory, _build_filename(
+                        number, prefix, suffix, name_pattern, number_format, number_width))
+
+            try:
+                with open(target, "w", encoding=encoding, newline="") as handle:
+                    handle.write(content)
+            except Exception as exc:
+                failed.append("%s (%s)" % (target, exc))
+                number += 1
+                continue
+
+            saved.append(target)
+            print("[Comfyui-wwdm-normal] 已保存: %s" % target)
+            number += 1
+
+        if failed:
+            print("[Comfyui-wwdm-normal] 以下文件保存失败：")
+            for item in failed:
+                print("    - %s" % item)
+
+        print("[Comfyui-wwdm-normal] 共保存 %d/%d 个 txt 到 %s" % (len(saved), len(items), directory))
+        return (saved, len(saved), directory)

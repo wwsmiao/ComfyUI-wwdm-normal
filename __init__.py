@@ -13,6 +13,7 @@ Comfyui-wwdm-normal —— WWDM 文本文件批量读取插件
     wwdm_TextTrimEach   / 文本列表逐条处理 —— 字符串列表 -> 字符串列表
     wwdm_TextShow       / 文本预览         —— 打印预览并原样传递
     wwdm_ImageFolder    / 图片文件夹读取   —— 文件夹 -> 图片列表
+    wwdm_AudioPlay      / 播放音频         —— 任意输入 -> 播放音效/音乐
 """
 
 from .txt import (
@@ -23,6 +24,7 @@ from .txt import (
     WWDMTextTrimEach,
     WWDMTextShow,
     WWDMImageFolder,
+    WWDMAudioPlay,
 )
 
 NODE_CLASS_MAPPINGS = {
@@ -33,6 +35,7 @@ NODE_CLASS_MAPPINGS = {
     "wwdm_TextTrimEach": WWDMTextTrimEach,
     "wwdm_TextShow": WWDMTextShow,
     "wwdm_ImageFolder": WWDMImageFolder,
+    "wwdm_AudioPlay": WWDMAudioPlay,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -43,6 +46,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "wwdm_TextTrimEach": "文本列表逐条处理 (wwdm)",
     "wwdm_TextShow": "文本预览 (wwdm)",
     "wwdm_ImageFolder": "图片文件夹读取 (wwdm)",
+    "wwdm_AudioPlay": "播放音频 (wwdm)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

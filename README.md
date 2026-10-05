@@ -34,6 +34,7 @@ git clone https://github.com/wwsmiao/ComfyUI-wwdm-normal.git
 | `wwdm_TextTrimEach` | 文本列表逐条处理 (wwdm) | 字符串列表 → 处理后的字符串列表 |
 | `wwdm_TextShow` | 文本预览 (wwdm) | 打印预览并原样传递 |
 | `wwdm_ImageFolder` | 图片文件夹读取 (wwdm) | 文件夹路径 → **图片列表** |
+| `wwdm_AudioPlay` | 播放音频 (wwdm) | **任意输入** → 播放指定位置的音效/音乐 |
 
 ## 核心节点：文本文件夹读取（wwdm_TextFolder）
 
@@ -168,11 +169,56 @@ filenames = ["1.png", "2.png", "10.png", "alpha.png"]
 count     = 4
 ```
 
+## 节点：播放音频（wwdm_AudioPlay）
+
+**输入为「任何」，播放指定位置的音效或音乐。**
+
+### 输入
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `path` | STRING | 空 | 音频文件路径，如 `E:\sfx\ding.mp3`；也支持只写文件名（会去 `C:\Windows\Media`、`~/Music` 等目录找） |
+| `audio` | **任意（`*`）** | 无 | 可接任何上游输出：路径字符串、字典（含 `path`/`filename` 等键）、或对象。解析出的路径**优先于** `path` |
+| `volume` | FLOAT | 1.0 | 音量 0~1（WMP / afplay / paplay / mpv 生效） |
+| `speed` | FLOAT | 1.0 | 播放速度 0.5~2（WMP / afplay / ffplay 生效） |
+| `wait_mode` | 下拉 | `async` | `wait` = 播放完再继续工作流；`async` = 立即返回、后台播放 |
+| `play_count` | INT | 1 | 重复播放次数 |
+| `max_seconds` | INT | 0 | 最长播放秒数，0 = 不限制；`wait` 模式下超时自动停止 |
+
+### 输出
+
+| 输出 | 类型 | 说明 |
+| --- | --- | --- |
+| `played` | BOOLEAN（列表） | 是否播放成功 |
+| `path` | STRING（列表） | 实际播放的文件路径 |
+| `message` | STRING（列表） | 执行说明或错误原因 |
+
+### 示例
+
+```
+示例1 - 完成时播放提示音（后台，不阻塞）：
+    path: "C:\Windows\Media\notify.wav"   wait_mode: async
+
+示例2 - 上游节点把路径传进来：
+    audio <- (任意节点的字符串输出)        wait_mode: wait
+
+示例3 - 试听一段音乐的前 10 秒：
+    path: "D:\music\demo.mp3"  max_seconds: 10  wait_mode: wait
+```
+
+### 说明
+
+- 播放后端：Windows 用 WMP（`WMPlayer.OCX`，支持 mp3/wav/wma 等），失败时退回 .NET `SoundPlayer`（仅 wav）；macOS 用 `afplay`；Linux 依次尝试 `paplay / aplay / ffplay / mpv / cvlc / play`。
+- 路径不会拼进命令行，而是通过参数/环境变量传给播放器，避免引号、空格、特殊字符导致的注入与转义问题。
+- 文件损坏或格式不支持时返回 `played = false` 并在 `message` 给出原因，**不会中断工作流**。
+- 自动化测试可用环境变量 `WWDM_AUDIO_NO_PLAY=1` 只解析路径、不出声。
+
 ## 用法说明
 
 - `texts` 是**字符串列表**输出。想把它合并成一段文本，接到 `文本列表连接 (wwdm)` 节点即可（分隔符默认换行）。
 - **核心节点**：文件夹 → 字符串列表：`wwdm_TextFolder`
 - **图片节点**：文件夹 → 图片列表：`wwdm_ImageFolder`
+- **音频节点**：任意输入 → 播放音效/音乐：`wwdm_AudioPlay`
 - 想查看读取结果，接到 `文本预览 (wwdm)` 节点，控制台会打印每条内容（超长自动截断）。
 - 排序默认 `name_natural`（自然排序），`1, 2, 10` 顺序正确；需要传统字符串排序时选 `name_asc`。
   （注：两个文本节点为保持原有行为，默认仍是 `name_asc`，但下拉里已提供 `name_natural` 选项。）
@@ -184,7 +230,8 @@ count     = 4
 ```
 Comfyui-wwdm-normal/
 ├── __init__.py        # 节点注册
-├── txt.py             # 全部节点实现
+├── txt.py             # 文本 / 图片 / 音频节点实现
+├── wwdm_audio.py      # 音频路径解析与系统播放器调用
 ├── self_test.py       # 自检脚本（python self_test.py）
 ├── workflows/         # 示例工作流
 ├── pyproject.toml     # 插件元信息（ComfyUI Manager 识别用）

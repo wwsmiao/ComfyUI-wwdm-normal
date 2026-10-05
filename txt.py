@@ -907,3 +907,112 @@ class WWDMImageFolder:
 
         print("[Comfyui-wwdm-normal] 已读取 %d/%d 张图片（目录: %s）" % (len(images), len(files), folder_path))
         return (images, names, masks, len(images))
+
+
+# =========================================================================
+# 7. wwdm_AudioPlay - 播放指定位置的音效/音乐
+# =========================================================================
+class WWDMAudioPlay:
+    """
+    播放音频节点
+
+    功能说明：
+        输入为"任何"（音频文件路径字符串，或上游任意输出），
+        解析出音频文件位置后调用系统播放器播放该音效/音乐。
+
+    参数说明：
+        audio       : 任意输入（*）。可以是：
+                      - 音频文件路径字符串（最常用），如 "E:\\\\sfx\\\\ding.mp3"
+                      - 只写文件名（如 "ding.wav"）时会去 C:\\\\Windows\\\\Media 等常见目录找
+                      - 字典 / 对象（含 path、audio_path、filename 等键或属性）
+        path        : 备用路径输入框；当 audio 没接或解析不出路径时使用它。
+        volume      : 音量 0~1（WMP / afplay / paplay / mpv 生效）。
+        speed       : 播放速度 0.5~2（WMP / afplay / ffplay 生效）。
+        wait_mode   : wait  = 播放完（或到 max_seconds）再继续工作流
+                      async = 立即返回，后台播放（推荐用于生成过程中的音效）
+        play_count  : 重复播放次数。
+        max_seconds : 最长播放秒数（0 = 不限制）；wait 模式下超时会自动停止。
+
+    输出说明：
+        played  : BOOLEAN / 列表，是否播放成功。
+        path    : STRING / 列表，实际播放的文件路径。
+        message : STRING / 列表，执行说明或错误原因。
+
+    使用示例：
+        示例1 - 完成时播放提示音：
+            path: "C:\\\\Windows\\\\Media\\\\notify.wav"  wait_mode: async
+
+        示例2 - 由上游节点传入路径：
+            audio <- (任意节点的字符串输出)  wait_mode: wait
+
+        示例3 - 试听一段音乐的前 10 秒：
+            path: "D:\\\\music\\\\demo.mp3"  max_seconds: 10  wait_mode: wait
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "path": ("STRING", {"multiline": False, "default": ""}),
+            },
+            "optional": {
+                "audio": ("*", {}),
+                "volume": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "speed": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 2.0, "step": 0.05}),
+                "wait_mode": (["wait", "async"], {"default": "async"}),
+                "play_count": ("INT", {"default": 1, "min": 1, "max": 100, "step": 1}),
+                "max_seconds": ("INT", {"default": 0, "min": 0, "max": 36000, "step": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("BOOLEAN", "STRING", "STRING")
+    RETURN_NAMES = ("played", "path", "message")
+    OUTPUT_IS_LIST = (True, True, True)
+    FUNCTION = "play"
+    CATEGORY = "wwdm-normal"
+    DESCRIPTION = "播放指定位置的音效或音乐（输入为任何类型）。"
+
+    def play(self, path="", audio=None, volume=1.0, speed=1.0,
+             wait_mode="async", play_count=1, max_seconds=0):
+        from . import wwdm_audio
+
+        # 输入解包（可能是列表）
+        raw_path = _first(path, "")
+        raw_audio = _first(audio, None)
+        volume = float(_first(volume, 1.0) or 1.0)
+        speed = float(_first(speed, 1.0) or 1.0)
+        wait_mode = str(_first(wait_mode, "async"))
+        play_count = int(_first(play_count, 1) or 1)
+        max_seconds = int(_first(max_seconds, 0) or 0)
+
+        # 优先用"任何"输入里解析到的路径，其次用 path 输入框
+        candidate = wwdm_audio.extract_path_from_input(raw_audio)
+        if not candidate:
+            candidate = raw_path
+
+        if not candidate:
+            message = "没有可播放的音频路径：请把音频路径填到 path，或把路径字符串接到 audio 输入"
+            print("[Comfyui-wwdm-normal] " + message)
+            return ([False], [""], [message])
+
+        resolved, error = wwdm_audio.resolve_audio_path(candidate)
+        if error:
+            print("[Comfyui-wwdm-normal] " + error)
+            return ([False], [candidate], [error])
+
+        success, logs = wwdm_audio.play_audio_node(
+            resolved,
+            volume=volume,
+            speed=speed,
+            wait_mode=wait_mode,
+            play_count=play_count,
+            max_seconds=max_seconds,
+        )
+
+        header = "[Comfyui-wwdm-normal] 播放 %s（%s）" % (resolved, wait_mode)
+        print(header)
+        for line in logs:
+            print("    " + line)
+
+        message = " | ".join(logs) if logs else "未执行播放"
+        return ([success > 0], [resolved], [message])

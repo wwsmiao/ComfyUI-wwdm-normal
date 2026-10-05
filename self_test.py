@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Comfyui-wwdm-normal 自检脚本（不依赖 ComfyUI 运行环境）"""
 import importlib.util
+import importlib
 import os
 import shutil
 import sys
 import tempfile
+import wave
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 PKG = "wwdm_normal_test"
@@ -21,7 +23,7 @@ spec.loader.exec_module(mod)
 print("NODE_CLASS_MAPPINGS =", sorted(mod.NODE_CLASS_MAPPINGS))
 print("NODE_DISPLAY_NAME_MAPPINGS =", sorted(mod.NODE_DISPLAY_NAME_MAPPINGS))
 assert "wwdm_TextFolder" in mod.NODE_CLASS_MAPPINGS
-assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 7
+assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 8
 
 FolderNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFolder"]
 ListedNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFileList"]
@@ -223,6 +225,87 @@ if HAVE_PIL:
     print("OK 12 图片文件夹读取（新节点）: 4 张图按 1,2,3,10 顺序读出，坏图被跳过")
 else:
     print("SKIP 12 未安装 Pillow，跳过图片节点自检")
+
+# 13) 新增节点：播放音频（任意输入 -> 播放指定位置的音效/音乐）
+#     测试统一走"试运行"模式（WWDM_AUDIO_NO_PLAY=1），不真的出声
+AudioNode = mod.NODE_CLASS_MAPPINGS["wwdm_AudioPlay"]
+assert "wwdm_AudioPlay" in mod.NODE_DISPLAY_NAME_MAPPINGS
+assert AudioNode.RETURN_TYPES == ("BOOLEAN", "STRING", "STRING")
+assert AudioNode.RETURN_NAMES == ("played", "path", "message")
+assert AudioNode.OUTPUT_IS_LIST == (True, True, True)
+assert AudioNode.CATEGORY == "wwdm-normal"
+it = AudioNode.INPUT_TYPES()
+assert it["required"]["path"][0] == "STRING"
+assert it["optional"]["audio"][0] == "*", "audio 必须是“任意类型”输入"
+
+# 路径解析与"任意输入"提取
+aud = importlib.import_module(PKG + ".wwdm_audio")
+wav_path = os.path.join(root, "ding.wav")
+with wave.open(wav_path, "wb") as fh:
+    fh.setnchannels(1)
+    fh.setsampwidth(2)
+    fh.setframerate(8000)
+    fh.writeframes(b"\x00\x00" * 800)
+
+resolved, err = aud.resolve_audio_path('"%s"' % wav_path)          # 带引号也要能解析
+assert err == "" and resolved == os.path.abspath(wav_path), (resolved, err)
+resolved, err = aud.resolve_audio_path("ding.wav")                 # 只给文件名 -> 常见目录里找
+assert (resolved, err) != ("", ""), "文件名兜底查找不应崩溃"
+resolved, err = aud.resolve_audio_path(os.path.join(root, "不存在.mp3"))
+assert resolved == "" and "找不到" in err, (resolved, err)
+resolved, err = aud.resolve_audio_path(root)                       # 给的是文件夹
+assert resolved == "" and "文件夹" in err, (resolved, err)
+assert aud.normalize_path('  "E:\\a b\\c.mp3"  ') == "E:\\a b\\c.mp3"
+
+assert aud.extract_path_from_input("abc.mp3") == "abc.mp3"
+assert aud.extract_path_from_input({"path": "d.mp3"}) == "d.mp3"
+assert aud.extract_path_from_input({"waveform": 1, "sample_rate": 44100}) is None
+assert aud.extract_path_from_input(["x.mp3", "y.mp3"]) == "x.mp3"
+assert aud.extract_path_from_input(12345) is None
+assert round(aud.wav_duration(wav_path), 2) == 0.1
+
+cmd, extra = aud.build_player_command(wav_path, volume=1.0, speed=1.0)
+assert cmd is not None, extra
+if os.name == "nt":
+    assert cmd[0].lower().endswith(("powershell.exe", "powershell", "pwsh.exe", "pwsh")), cmd[0]
+    assert wav_path not in " ".join(cmd), "路径不应拼进命令行，避免转义问题"
+    assert "WWDM_AUDIO_FILE" in cmd[-1]
+
+os.environ["WWDM_AUDIO_NO_PLAY"] = "1"
+try:
+    ok, res, msg = AudioNode().play(path=wav_path, wait_mode="async")
+    assert ok == [True] and res == [os.path.abspath(wav_path)], (ok, res, msg)
+    assert "试运行" in msg[0], msg
+
+    # "任意"输入优先于 path 输入框
+    ok, res, msg = AudioNode().play(path="", audio=wav_path)
+    assert ok == [True] and res == [os.path.abspath(wav_path)], (ok, res)
+
+    # 字典形式的任意输入
+    ok, res, msg = AudioNode().play(path="", audio={"path": wav_path})
+    assert ok == [True], (ok, msg)
+
+    # 列表输入取第一项
+    ok, res, msg = AudioNode().play(path="", audio=[wav_path])
+    assert ok == [True], (ok, msg)
+
+    # 无法解析的任意输入 -> 回退到 path；两者都空 -> 失败并给提示
+    ok, res, msg = AudioNode().play(path=wav_path, audio={"waveform": 1})
+    assert ok == [True], (ok, msg)
+    ok, res, msg = AudioNode().play(path="", audio={"waveform": 1})
+    assert ok == [False] and "没有可播放的音频路径" in msg[0], (ok, msg)
+
+    # 文件不存在 -> 明确报错，不抛异常
+    ok, res, msg = AudioNode().play(path=os.path.join(root, "nope.mp3"))
+    assert ok == [False] and "找不到" in msg[0], (ok, msg)
+
+    # 重复播放次数记录
+    ok, res, msg = AudioNode().play(path=wav_path, play_count=3)
+    assert ok == [True] and msg[0].count("次:") == 3, msg
+finally:
+    os.environ.pop("WWDM_AUDIO_NO_PLAY", None)
+
+print("OK 13 播放音频（新节点）: 路径解析/任意输入提取/试运行播放 均正常")
 
 shutil.rmtree(root, ignore_errors=True)
 print("\n全部自检通过 ✔")

@@ -133,8 +133,23 @@ texts = ["只有这一句"]
 | `sort_mode` | 下拉 | `name_natural` | 图片顺序，见下表 |
 | `recursive` | BOOLEAN | false | 是否递归子文件夹 |
 | `skip_hidden` | BOOLEAN | true | 跳过隐藏文件与系统目录 |
+| `start_index` | INT | 0 | **从第几张开始取**（1 = 第一张；0 与 1 等价） |
+| `end_index` | INT | 0 | **取到第几张为止（含这一张）**；0 = 一直取到最后 |
+| `slice_index` | INT | 0 | **只取某一张**（如 5 = 只要第 5 张）；0 = 不启用 |
 | `max_images` | INT | 0 | 最多读取数量，0 = 不限制 |
 | `max_megapixels` | INT | 0 | 单张百万像素上限，超过等比缩小，0 = 不限制 |
+
+序号按 `sort_mode` **排序后的顺序**计算，从 1 开始。组合效果：
+
+| 设置 | 取到的图片 |
+| --- | --- |
+| 都不填（默认） | 全部图片（与旧版本行为完全一致） |
+| `start_index=3, end_index=7` | 第 3、4、5、6、7 张（共 5 张） |
+| `start_index=20` | 第 20 张到最后 |
+| `end_index=5` | 第 1 张到第 5 张 |
+| `start_index=6, end_index=6` | 只取第 6 张 |
+| `slice_index=5` | 只取第 5 张（优先级高于 start/end） |
+| 序号超出总张数 | 输出空列表并在控制台提示，不报错 |
 
 `sort_mode` 取值：
 
@@ -159,6 +174,7 @@ texts = ["只有这一句"]
 - 支持 `png / jpg / jpeg / webp / bmp / gif / tif / tiff / jfif / avif`；GIF 取第一帧。
 - 单张图片损坏或非法时**只跳过该张**，控制台打印原因，不影响其余图片。
 - 读取时自动应用 EXIF 方向校正（手机竖拍照不会横过来）。
+- **可按序列选择**：`start_index` / `end_index` 取第几张到第几张，`slice_index` 只取某一张；序号从 1 开始，越界返回空列表。
 - `images` 是列表输出：接图片预览节点会逐张显示；接批次类节点即按顺序合并成一批。
 
 ### 示例
@@ -168,6 +184,19 @@ folder_path: "E:\ComfyUI\input\images"   sort_mode: name_natural   recursive: fa
 images    = [图1, 图2, 图10, 图alpha]
 filenames = ["1.png", "2.png", "10.png", "alpha.png"]
 count     = 4
+```
+
+```
+只取第 3 张到第 7 张：
+    start_index: 3   end_index: 7
+    filenames = ["3.png", "4.png", "5.png", "6.png", "7.png"]
+
+只取第 5 张：
+    slice_index: 5
+    filenames = ["5.png"]
+
+从第 20 张取到最后：
+    start_index: 20   end_index: 0
 ```
 
 ## 节点：播放音频（wwdm_AudioPlay）

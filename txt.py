@@ -800,6 +800,10 @@ class WWDMImageFolder:
         recursive   : 是否递归读取子文件夹。
         skip_hidden : 是否跳过隐藏文件与系统目录。
         max_images  : 最多读取的图片数量（0 = 不限制）。
+        start_index : 从序列的第几张图片开始取（1 = 第一张；0 与 1 等价）。
+        end_index   : 取到序列的第几张图片为止（含这一张；0 = 一直取到最后）。
+                      例：start_index=3、end_index=7 -> 只读第 3、4、5、6、7 张。
+        slice_index : 只取序列中的某一张（如 5 = 只要第 5 张）；0 = 不启用该选项。
         max_megapixels : 单张图片的百万像素上限，超过则等比缩小（0 = 不限制）。
 
     输出说明：
@@ -817,9 +821,20 @@ class WWDMImageFolder:
         示例2 - 按修改时间倒序取最新 10 张：
             folder_path: "D:\\photos"  sort_mode: mtime_desc  max_images: 10
 
+        示例3 - 只取第 3 张到第 7 张（共 5 张）：
+            folder_path: "D:\\photos"  start_index: 3  end_index: 7
+            filenames 结果: ["03.png", "04.png", "05.png", "06.png", "07.png"]
+
+        示例4 - 只取第 5 张：
+            folder_path: "D:\\photos"  slice_index: 5
+
+        示例5 - 从第 20 张取到最后：
+            folder_path: "D:\\photos"  start_index: 20  end_index: 0
+
     提示：
         输出是图片列表，接到批次类节点（如 Image Batch / 图像批量）即按顺序合并；
         接普通 IMAGE 输入时按 ComfyUI 规则逐张执行一次。
+        序号按"排序后的顺序"计算，从 1 开始。
     """
 
     @classmethod
@@ -836,6 +851,12 @@ class WWDMImageFolder:
             "optional": {
                 "recursive": ("BOOLEAN", {"default": False}),
                 "skip_hidden": ("BOOLEAN", {"default": True}),
+                "start_index": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1,
+                                        "tooltip": "从第几张开始取（1 = 第一张，0 与 1 等价）"}),
+                "end_index": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1,
+                                      "tooltip": "取到第几张为止，含这一张（0 = 一直取到最后）"}),
+                "slice_index": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1,
+                                        "tooltip": "只取某一张（如 5 = 只要第 5 张）；0 = 不启用"}),
                 "max_images": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
                 "max_megapixels": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1}),
             },
@@ -846,7 +867,7 @@ class WWDMImageFolder:
     OUTPUT_IS_LIST = (True, True, True, False)
     FUNCTION = "read_images"
     CATEGORY = "wwdm-normal"
-    DESCRIPTION = "依次读取文件夹中的所有图片，输出图片列表。"
+    DESCRIPTION = "依次读取文件夹中的所有图片，可指定第几张到第几张，输出图片列表。"
 
     def read_images(
         self,
@@ -855,6 +876,9 @@ class WWDMImageFolder:
         sort_mode="name_natural",
         recursive=False,
         skip_hidden=True,
+        start_index=0,
+        end_index=0,
+        slice_index=0,
         max_images=0,
         max_megapixels=0,
     ):
@@ -880,6 +904,37 @@ class WWDMImageFolder:
         if not files:
             print("[Comfyui-wwdm-normal] 文件夹中未找到图片: %s" % folder_path)
             return ([], [], [], 0)
+
+        total_found = len(files)
+
+        # 按序列位置选择：序号从 1 开始（1 = 排序后的第一张）
+        slice_index = int(_first(slice_index, 0) or 0)
+        start_index = int(_first(start_index, 0) or 0)
+        end_index = int(_first(end_index, 0) or 0)
+
+        if slice_index > 0:
+            if slice_index > total_found:
+                print("[Comfyui-wwdm-normal] 只找到 %d 张图片，取不到第 %d 张（目录: %s）"
+                      % (total_found, slice_index, folder_path))
+                return ([], [], [], 0)
+            files = [files[slice_index - 1]]
+            print("[Comfyui-wwdm-normal] 序列选择: 第 %d 张（共 %d 张）" % (slice_index, total_found))
+        elif start_index > 1 or end_index > 0:
+            start_pos = max(0, start_index - 1) if start_index > 0 else 0
+            end_pos = end_index if end_index > 0 else total_found
+            if start_pos >= total_found:
+                print("[Comfyui-wwdm-normal] 只找到 %d 张图片，起始序号 %d 超出范围（目录: %s）"
+                      % (total_found, start_index, folder_path))
+                return ([], [], [], 0)
+            selected = files[start_pos:end_pos]
+            if not selected:
+                print("[Comfyui-wwdm-normal] 序号区间 %d-%d 没有取到图片（共 %d 张）"
+                      % (start_index, end_index, total_found))
+                return ([], [], [], 0)
+            print("[Comfyui-wwdm-normal] 序列选择: 第 %d 张 到 第 %d 张（共 %d 张，请求 %d-%d）"
+                  % (start_pos + 1, start_pos + len(selected), total_found,
+                     start_index if start_index > 0 else 1, end_pos))
+            files = selected
 
         if max_images and int(max_images) > 0:
             files = files[: int(max_images)]

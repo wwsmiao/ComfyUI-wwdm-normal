@@ -222,6 +222,30 @@ if HAVE_PIL:
     os.makedirs(empty, exist_ok=True)
     assert image_node.read_images(empty) == ([], [], [], 0)
 
+    # 序列选择：按顺序取第几张到第几张（序号从 1 开始）
+    # 自然顺序为 1.png, 2.jpg, 3_alpha.png, 10.png
+    def names_of(**kwargs):
+        return image_node.read_images(img_dir, recursive=True, **kwargs)[1]
+
+    assert names_of(start_index=2) == ["2.jpg", "3_alpha.png", "10.png"]
+    assert names_of(end_index=2) == ["1.png", "2.jpg"]
+    assert names_of(start_index=2, end_index=3) == ["2.jpg", "3_alpha.png"]
+    assert names_of(start_index=1, end_index=1) == ["1.png"]
+    assert names_of(start_index=3, end_index=99) == ["3_alpha.png", "10.png"]   # 末页超出会自动收尾
+    assert names_of(start_index=20) == []                                       # 起始越界 -> 空列表
+    assert names_of(slice_index=3) == ["3_alpha.png"]                           # 单张选择
+    assert names_of(slice_index=1) == ["1.png"]
+    assert names_of(slice_index=99) == []                                       # 单张越界 -> 空列表
+    assert names_of(slice_index=0, start_index=0, end_index=0)[0] == "1.png"    # 都不填 = 全部
+    # 区间与 max_images 同时使用时，先按区间取，再限量
+    assert names_of(start_index=2, max_images=1) == ["2.jpg"]
+    # 区间同样影响 images / masks 输出（三者长度一致）
+    imgs, nms, mks, cnt = image_node.read_images(img_dir, recursive=True, start_index=2, end_index=3)
+    assert cnt == 2 and len(imgs) == len(nms) == len(mks) == 2
+    assert tuple(imgs[0].shape) == (1, 10, 12, 3), tuple(imgs[0].shape)         # 第 2 张是 2.jpg
+
+    print("OK 12b 图片序列选择: 第几张到第几张 / 单张 / 越界处理 均正常")
+
     print("OK 12 图片文件夹读取（新节点）: 4 张图按 1,2,3,10 顺序读出，坏图被跳过")
 else:
     print("SKIP 12 未安装 Pillow，跳过图片节点自检")

@@ -21,7 +21,7 @@ spec.loader.exec_module(mod)
 print("NODE_CLASS_MAPPINGS =", sorted(mod.NODE_CLASS_MAPPINGS))
 print("NODE_DISPLAY_NAME_MAPPINGS =", sorted(mod.NODE_DISPLAY_NAME_MAPPINGS))
 assert "wwdm_TextFolder" in mod.NODE_CLASS_MAPPINGS
-assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 6
+assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 7
 
 FolderNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFolder"]
 ListedNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFileList"]
@@ -158,6 +158,71 @@ joined, lst = pair.concat_pair(["first", "second"], "B")
 assert (joined, lst) == ("firstB", ["first", "B"]), (joined, lst)
 
 print("OK 11 双字符串拼接（新节点）:", pair.concat_pair("Hello", "World", connection=" "))
+
+# 12) 新增节点：图片文件夹读取（文件夹 -> 图片列表）
+try:
+    from PIL import Image as PILImage
+    HAVE_PIL = True
+except ImportError:
+    HAVE_PIL = False
+
+if HAVE_PIL:
+    ImageNode = mod.NODE_CLASS_MAPPINGS["wwdm_ImageFolder"]
+    assert "wwdm_ImageFolder" in mod.NODE_DISPLAY_NAME_MAPPINGS
+    assert ImageNode.RETURN_TYPES == ("IMAGE", "STRING", "MASK", "INT")
+    assert ImageNode.RETURN_NAMES == ("images", "filenames", "masks", "count")
+    assert ImageNode.OUTPUT_IS_LIST == (True, True, True, False), "images 必须是列表输出"
+    assert ImageNode.CATEGORY == "wwdm-normal"
+
+    img_dir = os.path.join(root, "imgs")
+    nested = os.path.join(img_dir, "nested")
+    os.makedirs(nested)
+    # 文件名故意用 1 / 2 / 10 检验排序：自然升序下 1,2,10
+    PILImage.new("RGB", (8, 6), (255, 0, 0)).save(os.path.join(img_dir, "1.png"))
+    PILImage.new("RGB", (12, 10), (0, 255, 0)).save(os.path.join(img_dir, "2.jpg"))
+    PILImage.new("RGBA", (5, 5), (0, 0, 255, 128)).save(os.path.join(img_dir, "3_alpha.png"))
+    PILImage.new("RGB", (4, 4), (1, 1, 1)).save(os.path.join(nested, "10.png"))
+    with open(os.path.join(img_dir, "not_image.txt"), "w", encoding="utf-8") as f:
+        f.write("不是图片")
+    with open(os.path.join(img_dir, "broken.png"), "wb") as f:
+        f.write(b"this is not a real png")
+
+    image_node = ImageNode()
+    images, names, masks, count = image_node.read_images(img_dir)
+    assert names == ["1.png", "2.jpg", "3_alpha.png"], names   # broken.png 被跳过
+    assert count == 3 and len(images) == 3 and len(masks) == 3
+    assert names[0] == "1.png" and tuple(images[0].shape) == (1, 6, 8, 3), tuple(images[0].shape)
+    assert tuple(images[1].shape) == (1, 10, 12, 3), tuple(images[1].shape)
+    assert masks[2] is not None and tuple(masks[2].shape) == (1, 5, 5), tuple(masks[2].shape)
+    assert masks[0] is None and masks[1] is None          # 无透明通道时为 None
+    assert 0.0 <= float(images[0].min()) and float(images[0].max()) <= 1.0
+
+    # 递归 + 数量限制（自然排序：1, 2, 3, 10）
+    images, names, masks, count = image_node.read_images(img_dir, recursive=True)
+    assert count == 4 and names == ["1.png", "2.jpg", "3_alpha.png", "10.png"], names
+    images, names, masks, count = image_node.read_images(img_dir, recursive=True, max_images=2)
+    assert count == 2 and names == ["1.png", "2.jpg"], names
+    # 纯字符串排序作为对照：1, 10, 2, 3
+    images, names, masks, count = image_node.read_images(img_dir, recursive=True, sort_mode="name_asc")
+    assert names == ["1.png", "10.png", "2.jpg", "3_alpha.png"], names
+
+    # 按修改时间倒序 + " * " 扩展名（读全部文件，坏图跳过）
+    images, names, masks, count = image_node.read_images(img_dir, extensions="*", sort_mode="mtime_desc")
+    assert count == 3
+    # 超大图保护
+    images, names, masks, count = image_node.read_images(img_dir, max_megapixels=1)
+    assert count == 3 and images[0].shape[3] == 3
+
+    # 异常与空文件夹
+    assert image_node.read_images("") == ([], [], [], 0)
+    assert image_node.read_images(os.path.join(root, "不存在")) == ([], [], [], 0)
+    empty = os.path.join(root, "empty_dir")
+    os.makedirs(empty, exist_ok=True)
+    assert image_node.read_images(empty) == ([], [], [], 0)
+
+    print("OK 12 图片文件夹读取（新节点）: 4 张图按 1,2,3,10 顺序读出，坏图被跳过")
+else:
+    print("SKIP 12 未安装 Pillow，跳过图片节点自检")
 
 shutil.rmtree(root, ignore_errors=True)
 print("\n全部自检通过 ✔")

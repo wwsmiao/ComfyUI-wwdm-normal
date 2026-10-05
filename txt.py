@@ -14,6 +14,7 @@ Comfyui-wwdm-normal —— 文本文件批量读取节点集
 """
 
 import os
+import re
 
 # 支持的文本扩展名（小写）
 TEXT_EXTS = {".txt", ".text", ".md", ".markdown", ".log", ".csv", ".json", ".yaml", ".yml"}
@@ -73,7 +74,23 @@ def _iter_files(folder, recursive=True, skip_hidden=True):
                 yield full
 
 
-def _collect_files(folder, extensions="txt", recursive=True, skip_hidden=True, sort_mode="name_asc"):
+def _natural_key(text):
+    """自然排序键：把字符串中的数字段按数值比较。
+
+    例如 ["1.png", "2.jpg", "10.png"] -> 1, 2, 10（而不是字符串排序的 1, 10, 2）。
+
+    实现要点：键固定为 (文本, 数字, 文本, 数字) 四元组，保证同一位置类型一致
+    （str 对 str、int 对 int），否则 Python 比较混合类型会得到错误的顺序。
+    """
+    chunks = re.split(r"(\d+)", str(text).lower())
+    texts = chunks[0::2]      # 第 0、2、... 段是文本
+    numbers = chunks[1::2]    # 第 1、3、... 段是数字
+    texts += [""] * (2 - len(texts))
+    numbers += [""] * (2 - len(numbers))
+    return (texts[0], int(numbers[0]) if numbers[0] else 0, texts[1], int(numbers[1]) if numbers[1] else 0)
+
+
+def _collect_files(folder, extensions="txt", recursive=True, skip_hidden=True, sort_mode="name_natural"):
     """按扩展名收集文件列表。
 
     返回 (文件列表, 错误信息)。文件夹不存在时文件列表为空并返回错误信息。
@@ -94,20 +111,25 @@ def _collect_files(folder, extensions="txt", recursive=True, skip_hidden=True, s
         files = all_files
 
     def _name_key(p):
-        return os.path.basename(p).lower()
+        return os.path.basename(p)
+
+    def _path_key(p):
+        return p
 
     if sort_mode == "name_desc":
         files.sort(key=_name_key, reverse=True)
+    elif sort_mode == "name_natural":
+        files.sort(key=lambda p: _natural_key(_name_key(p)))
     elif sort_mode == "mtime_asc":
-        files.sort(key=lambda p: (os.path.getmtime(p), _name_key(p)))
+        files.sort(key=lambda p: (os.path.getmtime(p), _natural_key(_name_key(p))))
     elif sort_mode == "mtime_desc":
-        files.sort(key=lambda p: (os.path.getmtime(p), _name_key(p)), reverse=True)
+        files.sort(key=lambda p: (os.path.getmtime(p), _natural_key(_name_key(p))), reverse=True)
     elif sort_mode == "fullpath_asc":
-        files.sort(key=lambda p: p.lower())
+        files.sort(key=lambda p: _path_key(p).lower())
     elif sort_mode == "fullpath_desc":
-        files.sort(key=lambda p: p.lower(), reverse=True)
+        files.sort(key=lambda p: _path_key(p).lower(), reverse=True)
     else:  # name_asc
-        files.sort(key=_name_key)
+        files.sort(key=lambda p: _name_key(p).lower())
 
     return files, ""
 
@@ -172,7 +194,8 @@ class WWDMTextFolder:
                       默认 "txt" 表示只读取 .txt。
         recursive   : 是否递归读取子文件夹。
         sort_mode   : 文件排序方式（决定列表中字符串的顺序）。
-                      name_asc / name_desc：按文件名
+                      name_asc / name_desc：按文件名（默认 name_asc）
+                      name_natural：按文件名自然排序（编号 1, 2, 10 正确）
                       fullpath_asc / fullpath_desc：按完整路径
                       mtime_asc / mtime_desc：按修改时间
         encoding_mode : 输出编码处理方式。
@@ -213,7 +236,7 @@ class WWDMTextFolder:
                 "folder_path": ("STRING", {"multiline": False, "default": ""}),
                 "extensions": ("STRING", {"multiline": False, "default": "txt"}),
                 "sort_mode": (
-                    ["name_asc", "name_desc", "fullpath_asc", "fullpath_desc", "mtime_asc", "mtime_desc"],
+                    ["name_asc", "name_desc", "fullpath_asc", "fullpath_desc", "mtime_asc", "mtime_desc", "name_natural"],
                     {"default": "name_asc"},
                 ),
             },
@@ -351,7 +374,7 @@ class WWDMTextFileList:
                 "folder_path": ("STRING", {"multiline": False, "default": ""}),
                 "extensions": ("STRING", {"multiline": False, "default": "txt"}),
                 "sort_mode": (
-                    ["name_asc", "name_desc", "fullpath_asc", "fullpath_desc", "mtime_asc", "mtime_desc"],
+                    ["name_asc", "name_desc", "fullpath_asc", "fullpath_desc", "mtime_asc", "mtime_desc", "name_natural"],
                     {"default": "name_asc"},
                 ),
             },
@@ -703,3 +726,184 @@ class WWDMTextShow:
             print("    %s%s" % (tag, shown.replace("\n", "\\n")))
 
         return (items,)
+
+
+# =========================================================================
+# 6. wwdm_ImageFolder - 依次读取文件夹中的所有图片
+# =========================================================================
+# 支持的图片扩展名（小写）
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".avif"}
+
+
+def _load_one_image(path, max_megapixels=0):
+    """把单个图片文件读成 ComfyUI 的 IMAGE 张量。
+
+    返回 (image_tensor[1,H,W,C] float32 0-1, mask_tensor[1,h,w] 或 None)。
+    依赖 torch / numpy / Pillow，全部在函数内延迟导入，避免插件导入阶段出问题。
+    """
+    import numpy as np
+    import torch
+    from PIL import Image, ImageOps, ImageSequence
+
+    alpha = None
+    mask_tensor = None
+
+    # 单次打开：取第一帧 RGB，并取出透明通道
+    with Image.open(path) as opened:
+        frame = next(ImageSequence.Iterator(opened), None)
+        if frame is None:
+            raise ValueError("图片没有可读取的帧")
+        frame = ImageOps.exif_transpose(frame)
+        image = frame.convert("RGB")
+        if "A" in frame.getbands():
+            alpha = frame.getchannel("A").copy()
+
+    # 超大图保护：按比例缩小（RGB 与 alpha 一起处理，保证尺寸一致）
+    limit = int(max_megapixels or 0)
+    if limit > 0:
+        pixels = image.size[0] * image.size[1]
+        if pixels > limit * 1_000_000:
+            scale = (limit * 1_000_000 / float(pixels)) ** 0.5
+            new_size = (max(1, int(image.size[0] * scale)), max(1, int(image.size[1] * scale)))
+            image = image.resize(new_size, Image.LANCZOS)
+            if alpha is not None:
+                alpha = alpha.resize(new_size, Image.LANCZOS)
+
+    arr = np.asarray(image).astype(np.float32) / 255.0
+    tensor = torch.from_numpy(arr)[None,]
+
+    if alpha is not None:
+        alpha_arr = np.asarray(alpha).astype(np.float32) / 255.0
+        mask_tensor = 1.0 - torch.from_numpy(alpha_arr)[None,]
+
+    return tensor, mask_tensor
+
+
+class WWDMImageFolder:
+    """
+    图片文件夹读取节点
+
+    功能说明：
+        输入一个文件夹路径，依次按顺序读取该文件夹（可选包含子文件夹）中的所有图片，
+        每张图片作为一个 IMAGE 元素，最终输出一个 IMAGE 列表（图片列表）。
+        列表顺序由 sort_mode 决定，与"文本文件夹读取"节点保持一致。
+
+    参数说明：
+        folder_path : 文件夹路径，例如 E:\\ComfyUI\\input\\images
+        extensions  : 参与读取的图片扩展名，逗号分隔；填 "*" 表示所有文件（非图片会报错跳过）。
+                      默认 "png, jpg, jpeg, webp, bmp, gif, tif, tiff"
+        sort_mode   : 图片顺序。
+                      name_natural：按文件名自然排序（默认，img1, img2, img10 正确）
+                      name_asc / name_desc：按文件名字符串排序（1, 10, 2）
+                      fullpath_asc / fullpath_desc：按完整路径
+                      mtime_asc / mtime_desc：按修改时间
+        recursive   : 是否递归读取子文件夹。
+        skip_hidden : 是否跳过隐藏文件与系统目录。
+        max_images  : 最多读取的图片数量（0 = 不限制）。
+        max_megapixels : 单张图片的百万像素上限，超过则等比缩小（0 = 不限制）。
+
+    输出说明：
+        images    : IMAGE 列表，每个元素是一张图（[1, H, W, C] float32 0~1）。
+        filenames : STRING 列表，对应的文件名。
+        masks     : MASK 列表，有透明通道的图片给出遮罩，其余为 None。
+        count     : INT，成功读取的图片数量。
+
+    使用示例：
+        示例1 - 读取文件夹内所有图片：
+            folder_path: "E:\\ComfyUI\\input\\images"
+            images 结果: [图1, 图2, 图3]   （按文件名顺序）
+            filenames 结果: ["01.png", "02.png", "03.png"]
+
+        示例2 - 按修改时间倒序取最新 10 张：
+            folder_path: "D:\\photos"  sort_mode: mtime_desc  max_images: 10
+
+    提示：
+        输出是图片列表，接到批次类节点（如 Image Batch / 图像批量）即按顺序合并；
+        接普通 IMAGE 输入时按 ComfyUI 规则逐张执行一次。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "folder_path": ("STRING", {"multiline": False, "default": ""}),
+                "extensions": ("STRING", {"multiline": False, "default": "png, jpg, jpeg, webp, bmp, gif, tif, tiff"}),
+                "sort_mode": (
+                    ["name_natural", "name_asc", "name_desc", "fullpath_asc", "fullpath_desc", "mtime_asc", "mtime_desc"],
+                    {"default": "name_natural"},
+                ),
+            },
+            "optional": {
+                "recursive": ("BOOLEAN", {"default": False}),
+                "skip_hidden": ("BOOLEAN", {"default": True}),
+                "max_images": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
+                "max_megapixels": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "MASK", "INT")
+    RETURN_NAMES = ("images", "filenames", "masks", "count")
+    OUTPUT_IS_LIST = (True, True, True, False)
+    FUNCTION = "read_images"
+    CATEGORY = "wwdm-normal"
+    DESCRIPTION = "依次读取文件夹中的所有图片，输出图片列表。"
+
+    def read_images(
+        self,
+        folder_path,
+        extensions="png, jpg, jpeg, webp, bmp, gif, tif, tiff",
+        sort_mode="name_natural",
+        recursive=False,
+        skip_hidden=True,
+        max_images=0,
+        max_megapixels=0,
+    ):
+        # 默认只挑图片扩展名；用户填 "*" 时读取全部文件
+        exts = _normalize_exts(extensions)
+        if not exts:
+            files, error = _collect_files(
+                folder_path, extensions="*", recursive=recursive,
+                skip_hidden=skip_hidden, sort_mode=sort_mode,
+            )
+        else:
+            files, error = _collect_files(
+                folder_path, extensions=extensions, recursive=recursive,
+                skip_hidden=skip_hidden, sort_mode=sort_mode,
+            )
+            if not error:
+                files = [p for p in files if os.path.splitext(p)[1].lower() in IMAGE_EXTS]
+
+        if error:
+            print("[Comfyui-wwdm-normal] %s" % error)
+            return ([], [], [], 0)
+
+        if not files:
+            print("[Comfyui-wwdm-normal] 文件夹中未找到图片: %s" % folder_path)
+            return ([], [], [], 0)
+
+        if max_images and int(max_images) > 0:
+            files = files[: int(max_images)]
+
+        images = []
+        names = []
+        masks = []
+        failed = []
+
+        for path in files:
+            try:
+                image, mask = _load_one_image(path, max_megapixels=max_megapixels)
+            except Exception as exc:  # 单张图失败不影响整体
+                failed.append("%s (%s)" % (path, exc))
+                continue
+
+            images.append(image)
+            names.append(os.path.basename(path))
+            masks.append(mask)
+
+        if failed:
+            print("[Comfyui-wwdm-normal] 以下图片读取失败，已跳过：")
+            for item in failed:
+                print("    - %s" % item)
+
+        print("[Comfyui-wwdm-normal] 已读取 %d/%d 张图片（目录: %s）" % (len(images), len(files), folder_path))
+        return (images, names, masks, len(images))

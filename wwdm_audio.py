@@ -216,6 +216,57 @@ def build_player_command(path, volume=1.0, speed=1.0):
     return None, {"error": "系统里找不到可用的音频播放器（paplay/aplay/ffplay/mpv/cvlc/play 都没有）"}
 
 
+def play_windows_with_ffplay(path, volume=1.0, speed=1.0, wait=False, timeout=None):
+    """Windows 专用：用 ffplay 播放任意格式（WMP 不支持的 flac/opus/m4a 等）。
+
+    ffplay 由 ffmpeg 附带，可无窗口运行（-nodisp），支持音量与倍速。
+    """
+    player = shutil.which("ffplay")
+    if not player:
+        return None  # 没装 ffmpeg/ffplay，交给上层报错
+
+    cmd = [player, "-nodisp", "-autoexit", "-loglevel", "error",
+           "-volume", str(int(max(0.0, min(1.0, float(volume))) * 100))]
+    if abs(float(speed) - 1.0) > 1e-6:
+        cmd += ["-af", "atempo=%.3f" % max(0.5, min(2.0, float(speed)))]
+    cmd.append(path)
+
+    try:
+        if wait:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                    **_hidden_process_flags())
+            try:
+                proc.wait(timeout=timeout if timeout else None)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                return True, "已播放（达到最大时长 %s 秒后停止）" % timeout
+
+            err = (proc.stderr.read() or b"").decode("utf-8", "replace")
+            # ffplay 对损坏文件也可能以 0 退出，需要看它的报错文本
+            fatal = [line for line in err.splitlines()
+                     if "Invalid data" in line or "Error while decoding" in line
+                     or "Failed to open" in line or "No such file" in line]
+            if proc.returncode == 0 and not fatal:
+                return True, "播放完成（ffplay）"
+            reason = _short_error("\n".join(fatal) or err)
+            return False, "ffplay 播放失败（退出码 %s）: %s" % (proc.returncode, reason)
+
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, **_hidden_process_flags())
+        return True, "已开始播放（后台模式，ffplay）"
+    except Exception as exc:
+        return False, "ffplay 播放出错: %s" % exc
+
+
+def _hidden_process_flags():
+    """Windows 上让子进程不弹黑窗；其它平台返回空。"""
+    if os.name == "nt":
+        flags = 0
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return {"creationflags": flags}
+    return {}
+
+
 def _short_error(raw, lines=2):
     """把播放器的报错压成一行，避免 PowerShell 把整段脚本和堆栈回显出来。"""
     text = str(raw or "")
@@ -270,31 +321,46 @@ def play_audio(path, volume=1.0, speed=1.0, wait=False, timeout=None):
         env["WWDM_AUDIO_WAIT"] = "1" if wait else "0"
 
     try:
-        if wait:
-            proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            limit = timeout if timeout else None
-            try:
-                proc.wait(timeout=limit)
-            except subprocess.TimeoutExpired:
-                proc.terminate()
-                return True, "已播放（达到最大时长 %s 秒后停止）" % timeout
+        ok, message = _play_with_command(cmd, env, path, wait, timeout)
 
-            if proc.returncode == 0:
-                return True, "播放完成"
+        # Windows：WMP 播不了（flac / opus / ape 等）时用 ffplay 兜底，支持绝大多数格式
+        if not ok and sys.platform.startswith("win"):
+            fallback = play_windows_with_ffplay(path, volume, speed, wait, timeout)
+            if fallback is not None:
+                print("[Comfyui-wwdm-normal] WMP 无法播放，改用 ffplay 兜底")
+                return fallback
 
-            if proc.returncode == 2:
-                return False, "文件不存在: %s" % path
-
-            err = _short_error((proc.stderr.read() or b"").decode("utf-8", "replace"))
-            if "no available windows audio backend" in err:
-                return False, "系统播放器无法播放该文件（格式不支持或文件损坏）: %s" % path
-            return False, "播放失败（退出码 %s）: %s" % (proc.returncode, err)
-
-        subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
-        return True, "已开始播放（后台模式）"
+        return ok, message
     except Exception as exc:
         return False, "播放出错: %s" % exc
+
+
+def _play_with_command(cmd, env, path, wait, timeout):
+    """执行播放命令并归一化返回值。"""
+    if wait:
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                **_hidden_process_flags())
+        limit = timeout if timeout else None
+        try:
+            proc.wait(timeout=limit)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            return True, "已播放（达到最大时长 %s 秒后停止）" % timeout
+
+        if proc.returncode == 0:
+            return True, "播放完成"
+
+        if proc.returncode == 2:
+            return False, "文件不存在: %s" % path
+
+        err = _short_error((proc.stderr.read() or b"").decode("utf-8", "replace"))
+        if "no available windows audio backend" in err:
+            return False, "系统播放器无法播放该文件（格式不支持或文件损坏）: %s" % path
+        return False, "播放失败（退出码 %s）: %s" % (proc.returncode, err)
+
+    subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, **_hidden_process_flags())
+    return True, "已开始播放（后台模式）"
 
 
 def play_audio_node(path, volume=1.0, speed=1.0, wait_mode="wait", play_count=1, max_seconds=0):

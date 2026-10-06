@@ -330,6 +330,26 @@ try:
 finally:
     os.environ.pop("WWDM_AUDIO_NO_PLAY", None)
 
+# 13b) 真实播放：WAV 与 FLAC（FLAC 走 ffplay 兜底，WMP 本身不支持）
+if os.name == "nt" and shutil.which("ffmpeg"):
+    ff = shutil.which("ffmpeg")
+    flac_path = os.path.join(root, "tone.flac")
+    subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "sine=frequency=660:duration=1.0", flac_path],
+                   timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert os.path.isfile(flac_path), "FLAC 测试文件未生成"
+
+    ok, msg = aud.play_audio(flac_path, volume=0.2, wait=True, timeout=15)
+    assert ok is True, "FLAC 应能播放（ffplay 兜底），实际: %s" % msg
+    print("    FLAC 播放:", msg)
+
+    # 损坏文件即使 ffplay 返回 0 也要判定为失败
+    broken = os.path.join(root, "broken_audio.flac")
+    open(broken, "wb").write(b"not audio at all")
+    ok, msg = aud.play_audio(broken, volume=0.2, wait=True, timeout=15)
+    assert ok is False, "损坏音频不应报告播放成功: %s" % msg
+    print("    损坏音频判定:", msg[:60])
+
 print("OK 13 播放音频（新节点）: 路径解析/任意输入提取/试运行播放 均正常")
 
 # 14) 新增节点：保存文本为 txt（字符串 -> txt，文件名可自定义，默认 1-n）

@@ -239,9 +239,21 @@ count     = 4
 
 ### 说明
 
-- 播放后端：Windows 用 WMP（`WMPlayer.OCX`，支持 mp3/wav/wma 等），失败时退回 .NET `SoundPlayer`（仅 wav）；macOS 用 `afplay`；Linux 依次尝试 `paplay / aplay / ffplay / mpv / cvlc / play`。
+- 播放后端与**格式支持**：
+  - **Windows**：先用 WMP（`WMPlayer.OCX`）播放，WMP 不支持时**自动改用 ffplay 兜底**（需要系统装有 ffmpeg），最后才退回 .NET `SoundPlayer`（仅 wav）。
+  - **macOS**：`afplay`；**Linux**：依次尝试 `paplay / aplay / ffplay / mpv / cvlc / play`。
+- 各格式在 Windows 上的实际情况（已实测）：
+
+  | 格式 | 走的后端 | 是否需要 ffmpeg |
+  | --- | --- | --- |
+  | wav | WMP（SoundPlayer 兜底） | 否 |
+  | mp3 / wma | WMP | 否 |
+  | **flac** | **ffplay 兜底** | **是** |
+  | opus / ogg / m4a / ape | ffplay 兜底 | 是 |
+
+  也就是说：**FLAC 能不能播，取决于系统里有没有 ffmpeg**。装了 ffmpeg（且 ffplay 在 PATH 里）就能播；没装时会返回失败并给出原因，不会静默成功。装法：`winget install Gyan.FFmpeg` 或把 ffmpeg 的 `bin` 目录加进 PATH。
 - 路径不会拼进命令行，而是通过参数/环境变量传给播放器，避免引号、空格、特殊字符导致的注入与转义问题。
-- 文件损坏或格式不支持时返回 `played = false` 并在 `message` 给出原因，**不会中断工作流**。
+- 文件损坏或格式不支持时返回 `played = false` 并在 `message` 给出原因，**不会中断工作流**；ffplay 对损坏文件可能以退出码 0 结束，因此还会检查其报错文本，避免误报成功。
 - 自动化测试可用环境变量 `WWDM_AUDIO_NO_PLAY=1` 只解析路径、不出声。
 
 ## 节点：保存文本（wwdm_SaveText）

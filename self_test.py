@@ -4,6 +4,7 @@ import importlib.util
 import importlib
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import wave
@@ -23,7 +24,7 @@ spec.loader.exec_module(mod)
 print("NODE_CLASS_MAPPINGS =", sorted(mod.NODE_CLASS_MAPPINGS))
 print("NODE_DISPLAY_NAME_MAPPINGS =", sorted(mod.NODE_DISPLAY_NAME_MAPPINGS))
 assert "wwdm_TextFolder" in mod.NODE_CLASS_MAPPINGS
-assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 9
+assert len(mod.NODE_CLASS_MAPPINGS) == len(mod.NODE_DISPLAY_NAME_MAPPINGS) == 10
 
 FolderNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFolder"]
 ListedNode = mod.NODE_CLASS_MAPPINGS["wwdm_TextFileList"]
@@ -414,6 +415,96 @@ paths, count, _ = save.save_text("x", save_dir=os.path.join(root, "01_utf8.txt",
 assert paths == [] and count == 0
 
 print("OK 14 保存文本为 txt（新节点）: 默认 1-n 命名 / 自定义模板 / 续号 / 编码 均正常")
+
+# 15) 新增节点：视频最后一帧（视频 -> 最后一帧图片）
+VideoNode = mod.NODE_CLASS_MAPPINGS["wwdm_VideoLastFrame"]
+assert "wwdm_VideoLastFrame" in mod.NODE_DISPLAY_NAME_MAPPINGS
+assert VideoNode.RETURN_TYPES == ("IMAGE", "INT", "STRING", "DICT")
+assert VideoNode.RETURN_NAMES == ("image", "frame_count", "filename", "video_info")
+assert VideoNode.CATEGORY == "wwdm-normal"
+assert VideoNode.INPUT_TYPES()["optional"]["video"][0] == "*", "video 必须是“任何”输入"
+
+vid = importlib.import_module(PKG + ".wwdm_video")
+videonode = VideoNode()
+
+# 15.1 路径解析 / 从任意输入提取
+assert vid.normalize_path('  "C:\\a b\\c.mp4"  ') == "C:\\a b\\c.mp4"
+assert vid.extract_path_from_input("x.mp4") == "x.mp4"
+assert vid.extract_path_from_input({"path": "y.mp4"}) == "y.mp4"
+assert vid.extract_path_from_input([None, "z.mp4"]) == "z.mp4"
+assert vid.extract_path_from_input(12345) is None
+resolved, err = vid.resolve_video_path(os.path.join(root, "缺失.mp4"))
+assert resolved == "" and "找不到" in err
+resolved, err = vid.resolve_video_path(root)
+assert resolved == "" and "文件夹" in err
+
+# 15.2 真正解码一段合成的视频（末帧为纯红色，用来验证"就是最后一帧"）
+FFMPEG = shutil.which("ffmpeg")
+if FFMPEG:
+    from PIL import Image as PILImage2
+    test_mp4 = os.path.join(root, "video_last_frame.mp4")
+    # 前 10 帧蓝色，最后一帧红色：最后一帧取错会明显暴露
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+           "-f", "lavfi", "-i", "color=c=blue:s=64x48:r=10:d=1",
+           "-vf", "drawbox=x=0:y=0:w=64:h=48:color=red@1:t=fill:enable='eq(n,9)'",
+           "-pix_fmt", "yuv420p", test_mp4]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    assert os.path.isfile(test_mp4), "测试视频未生成"
+
+    img, used = vid.read_last_frame(test_mp4)
+    assert tuple(img.shape) == (1, 48, 64, 3), tuple(img.shape)
+    assert 0.0 <= float(img.min()) and float(img.max()) <= 1.0
+    # 末帧应为红色（R 明显大于 G/B）
+    assert float(img[..., 0].mean()) > 0.7, "末帧不是红色，可能没取到最后一帧"
+    assert float(img[..., 2].mean()) < 0.2, "末帧混入了蓝色"
+    print("    解码器:", used, "| 末帧平均 RGB: %.3f/%.3f/%.3f" % (
+        float(img[..., 0].mean()), float(img[..., 1].mean()), float(img[..., 2].mean())))
+
+    info = vid.get_video_info(test_mp4)
+    assert info.get("width") == 64 and info.get("height") == 48, info
+
+    # 节点接口：路径输入
+    image, count, filename, vinfo = videonode.last_frame(video_path=test_mp4)
+    assert tuple(image.shape) == (1, 48, 64, 3), tuple(image.shape)
+    assert filename == "video_last_frame.mp4"
+    assert isinstance(vinfo, dict) and vinfo.get("width") == 64
+
+    # 节点接口：任意输入（模拟 VIDEO 对象提供 get_stream_source）
+    class FakeVideo:
+        def __init__(self, path):
+            self._path = path
+        def get_stream_source(self):
+            return self._path
+        def get_active_trim_window(self):
+            return (0.0, 0.0)
+
+    image, count, filename, vinfo = videonode.last_frame(video=FakeVideo(test_mp4))
+    assert tuple(image.shape) == (1, 48, 64, 3), tuple(image.shape)
+
+    # frame_offset：往前退 1 帧 -> 应该是蓝色
+    image, count, filename, vinfo = videonode.last_frame(video_path=test_mp4, frame_offset=1)
+    assert float(image[..., 2].mean()) > 0.5, "退一帧后应为蓝色"
+
+    # 强制 ffmpeg 解码
+    img_ff, used_ff = vid.read_last_frame(test_mp4, decoder="ffmpeg")
+    assert used_ff == "ffmpeg" and float(img_ff[..., 0].mean()) > 0.7
+
+    # 15.3 失败路径：结构完整的空结果，不抛异常
+    image, count, filename, vinfo = videonode.last_frame(video_path=os.path.join(root, "没有.mp4"))
+    assert count == 0 and tuple(image.shape) == (1, 64, 64, 3)
+    assert "找不到" in vinfo.get("error", ""), vinfo
+    image, count, filename, vinfo = videonode.last_frame(video_path="", video=None)
+    assert count == 0 and "没有可读取的视频" in vinfo.get("error", ""), vinfo
+
+    not_video = os.path.join(root, "不是视频.mp4")
+    open(not_video, "wb").write(b"this is not a video")
+    image, count, filename, vinfo = videonode.last_frame(video_path=not_video)
+    assert count == 0, "非视频文件应返回空结果"
+
+    os.remove(not_video)
+    print("OK 15 视频最后一帧（新节点）: 末帧颜色/尺寸/任意输入/回退/兜底 均正确")
+else:
+    print("SKIP 15 系统没有 ffmpeg，跳过视频节点解码自检")
 
 shutil.rmtree(root, ignore_errors=True)
 print("\n全部自检通过 ✔")

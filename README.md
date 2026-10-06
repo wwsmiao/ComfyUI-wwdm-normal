@@ -36,6 +36,7 @@ git clone https://github.com/wwsmiao/ComfyUI-wwdm-normal.git
 | `wwdm_ImageFolder` | 图片文件夹读取 (wwdm) | 文件夹路径 → **图片列表** |
 | `wwdm_AudioPlay` | 播放音频 (wwdm) | **任意输入** → 播放指定位置的音效/音乐 |
 | `wwdm_SaveText` | 保存文本 (wwdm) | 字符串 → 保存为 txt，**文件名可自定义，默认 1.txt、2.txt……** |
+| `wwdm_VideoLastFrame` | 视频最后一帧 (wwdm) | **视频 → 该视频的最后一帧图片** |
 
 ## 核心节点：文本文件夹读取（wwdm_TextFolder）
 
@@ -297,6 +298,49 @@ count     = 4
 - 续号按**各自命名规则独立计算**：`1.txt` 系列与 `note_*.txt` 系列互不影响。
 - 目录不存在会自动创建；某个文件写入失败只跳过该文件并打印原因，不中断工作流。
 
+## 节点：视频最后一帧（wwdm_VideoLastFrame）
+
+**输入视频，输出该视频的最后一帧图片。**
+
+### 输入
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `video_path` | STRING | 空 | 视频文件路径，如 `E:\video\a.mp4`；也支持相对 ComfyUI `input` 目录的相对路径 |
+| `video` | **任意（`*`）** | 无 | 可接 ComfyUI 原生「加载视频」节点的 **VIDEO** 输出，也可接路径字符串/字典/对象。带裁剪区间的视频会取该区间的最后一帧 |
+| `frame_offset` | INT | 0 | 从最后一帧往前退几张（0 = 最后一帧，1 = 倒数第二张……） |
+| `decoder` | 下拉 | `auto` | `auto` = 先用 PyAV，失败自动退回 ffmpeg；也可强制 `pyav` / `ffmpeg` |
+| `timeout` | INT | 0 | 解码超时秒数，0 = 不限制 |
+
+### 输出
+
+| 输出 | 类型 | 说明 |
+| --- | --- | --- |
+| `image` | IMAGE | 最后一帧图片，`[1, H, W, C]` float32，0~1 |
+| `frame_count` | INT | 从最接近结尾处解出的帧数（成功时为 1，失败为 0） |
+| `filename` | STRING | 视频文件名 |
+| `video_info` | DICT | 视频信息：`codec` / `width` / `height` / `fps` / `duration` / `total_frames` / `decoder` 等 |
+
+### 示例
+
+```
+示例1 - 直接接原生加载视频节点：
+    video <- Load Video.video
+
+示例2 - 用路径：
+    video_path: "E:\video\demo.mp4"
+    image 结果: 该视频最后一帧
+
+示例3 - 结尾有一帧黑场，想避开：
+    video_path: "E:\video\demo.mp4"   frame_offset: 1
+```
+
+### 说明
+
+- 优先用 **PyAV**（ComfyUI 自带依赖）解码；解码失败或强制指定时退回 **ffmpeg** 命令行（不需要额外 Python 包）。
+- `frame_offset` 会取「结尾若干帧里的倒数第 N 张」，与 ffmpeg 逐帧导出的结果一致（已用 14 帧测试视频逐帧比对验证）。
+- 视频不存在、不是视频文件、没有视频流时，输出一张占位图并保持输出结构完整，同时在 `video_info.error` 给出原因，**不会中断工作流**。
+
 ## 用法说明
 
 - `texts` 是**字符串列表**输出。想把它合并成一段文本，接到 `文本列表连接 (wwdm)` 节点即可（分隔符默认换行）。
@@ -304,6 +348,7 @@ count     = 4
 - **图片节点**：文件夹 → 图片列表：`wwdm_ImageFolder`
 - **音频节点**：任意输入 → 播放音效/音乐：`wwdm_AudioPlay`
 - **保存节点**：字符串 → txt（文件名自定义，默认 1-n）：`wwdm_SaveText`
+- **视频节点**：视频 → 最后一帧图片：`wwdm_VideoLastFrame`（可接原生 VIDEO 输出，也可用路径）
 - 想查看读取结果，接到 `文本预览 (wwdm)` 节点，控制台会打印每条内容（超长自动截断）。
 - 排序默认 `name_natural`（自然排序），`1, 2, 10` 顺序正确；需要传统字符串排序时选 `name_asc`。
   （注：两个文本节点为保持原有行为，默认仍是 `name_asc`，但下拉里已提供 `name_natural` 选项。）
@@ -315,8 +360,9 @@ count     = 4
 ```
 Comfyui-wwdm-normal/
 ├── __init__.py        # 节点注册
-├── txt.py             # 文本 / 图片 / 音频节点实现
+├── txt.py             # 文本 / 图片 / 音频 / 保存 / 视频节点实现
 ├── wwdm_audio.py      # 音频路径解析与系统播放器调用
+├── wwdm_video.py      # 视频路径解析、最后一帧解码（PyAV + ffmpeg 兜底）
 ├── self_test.py       # 自检脚本（python self_test.py）
 ├── workflows/         # 示例工作流
 ├── pyproject.toml     # 插件元信息（ComfyUI Manager 识别用）

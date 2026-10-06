@@ -1334,3 +1334,208 @@ class WWDMSaveText:
 
         print("[Comfyui-wwdm-normal] 共保存 %d/%d 个 txt 到 %s" % (len(saved), len(items), directory))
         return (saved, len(saved), directory)
+
+
+# =========================================================================
+# 9. wwdm_VideoLastFrame - 取视频的最后一帧
+# =========================================================================
+class WWDMVideoLastFrame:
+    """
+    视频最后一帧节点
+
+    功能说明：
+        输入视频，输出该视频的最后一帧图片。
+        默认把"最后一帧"定义为一个完整帧组（GOP）的最后一张，
+        可通过 frame_offset 往前多退几张，方便避开结尾的转场/黑帧。
+
+    参数说明：
+        video       : 视频输入（任何）。可接：
+                      - ComfyUI 原生"加载视频"节点的 VIDEO 输出
+                      - 视频文件路径字符串（如 E:\\\\video\\\\a.mp4）
+                      - 字典 / 对象（含 path、filename 等键或属性）
+                      如果视频对象带有裁剪区间，会取该区间的最后一帧。
+        video_path  : 备用路径输入框；video 没接或解析不出路径时使用。
+        frame_offset: 从最后一帧往前退几张（0 = 最后一帧，1 = 倒数第二张……）。
+        decoder     : auto = 先用 PyAV，失败自动退回 ffmpeg；也可强制 pyav / ffmpeg。
+        timeout     : 解码超时秒数（0 = 不限制）。
+
+    输出说明：
+        image     : IMAGE，最后一帧图片（[1, H, W, C] float32 0~1）。
+        frame_count : INT，从最接近结尾处解出的帧数（用来判断确实读到了画面）。
+        filename  : STRING，视频文件名。
+        video_info: DICT，视频信息（编码、分辨率、帧率、时长、总帧数等）。
+
+    使用示例：
+        示例1 - 直接接原生加载视频节点：
+            video <- Load Video.video
+
+        示例2 - 用路径：
+            video_path: "E:\\\\video\\\\demo.mp4"
+
+        示例3 - 结尾有个黑帧，往前退一张：
+            video_path: "E:\\\\video\\\\demo.mp4"  frame_offset: 1
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video_path": ("STRING", {"multiline": False, "default": ""}),
+            },
+            "optional": {
+                "video": ("*", {}),
+                "frame_offset": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1,
+                                         "tooltip": "从最后一帧往前退几张（0 = 最后一帧）"}),
+                "decoder": (["auto", "pyav", "ffmpeg"], {"default": "auto"}),
+                "timeout": ("INT", {"default": 0, "min": 0, "max": 3600, "step": 1,
+                                    "tooltip": "解码超时秒数，0 = 不限制"}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "INT", "STRING", "DICT")
+    RETURN_NAMES = ("image", "frame_count", "filename", "video_info")
+    FUNCTION = "last_frame"
+    CATEGORY = "wwdm-normal"
+    DESCRIPTION = "输入视频，输出该视频的最后一帧图片。"
+
+    def last_frame(self, video_path="", video=None, frame_offset=0, decoder="auto", timeout=0):
+        from . import wwdm_video
+
+        raw_video = _first(video, None)
+        raw_path = _first(video_path, "")
+        frame_offset = int(_first(frame_offset, 0) or 0)
+        decoder = str(_first(decoder, "auto") or "auto")
+        timeout = int(_first(timeout, 0) or 0)
+
+        # 找到视频来源：VIDEO 对象优先，其次路径
+        source = None
+        trim_end = None
+        error = ""
+
+        video_obj = raw_video if raw_video is not None and hasattr(raw_video, "get_stream_source") else None
+        if video_obj is not None:
+            try:
+                source = video_obj.get_stream_source()
+            except Exception as exc:
+                error = "无法从视频对象读取文件来源: %s" % exc
+            # VIDEO 对象可能带裁剪区间，取区间的结束时间
+            try:
+                start_time, duration = video_obj.get_active_trim_window()
+                if duration and duration > 0:
+                    trim_end = float(start_time) + float(duration)
+                else:
+                    raw_duration = None
+                    for attr in ("_get_raw_duration", "get_duration"):
+                        if hasattr(video_obj, attr):
+                            try:
+                                raw_duration = float(getattr(video_obj, attr)())
+                                break
+                            except Exception:
+                                raw_duration = None
+                    if raw_duration:
+                        trim_end = raw_duration
+            except Exception:
+                trim_end = None
+        else:
+            candidate = wwdm_video.extract_path_from_input(raw_video)
+            if not candidate:
+                candidate = raw_path
+
+            if not candidate:
+                message = ("没有可读取的视频：请把视频路径填到 video_path，"
+                           "或把 VIDEO / 路径接到 video 输入")
+                print("[Comfyui-wwdm-normal] " + message)
+                return (self._empty_result(message))
+
+            source = candidate
+
+        # 字符串来源需要有真实文件
+        if isinstance(source, (str, os.PathLike)):
+            resolved, path_error = wwdm_video.resolve_video_path(source)
+            if path_error:
+                print("[Comfyui-wwdm-normal] " + path_error)
+                return (self._empty_result(path_error))
+            source = resolved
+
+        if error:
+            print("[Comfyui-wwdm-normal] " + error)
+            return (self._empty_result(error))
+
+        filename = os.path.basename(str(source)) if isinstance(source, (str, os.PathLike)) else "video"
+
+        try:
+            info = wwdm_video.get_video_info(source, timeout=timeout or None)
+        except Exception:
+            info = {}
+
+        try:
+            frames = []
+            # 依次往前取，实现 frame_offset（每次都重新解到结尾，简单可靠）
+            image, used = wwdm_video.read_last_frame(
+                source, end_time=trim_end, timeout=timeout or None, decoder=decoder)
+        except Exception as exc:
+            message = "读取视频最后一帧失败: %s" % exc
+            print("[Comfyui-wwdm-normal] " + message)
+            info = dict(info)
+            info["error"] = message
+            return (self._empty_result(message, filename=filename, info=info))
+
+        if frame_offset > 0:
+            image = self._step_back(source, trim_end, frame_offset, decoder, timeout, fallback=image)
+
+        if not info.get("width"):
+            info["width"] = int(image.shape[2])
+            info["height"] = int(image.shape[1])
+        info["decoder"] = used
+        info["frame_offset"] = frame_offset
+
+        print("[Comfyui-wwdm-normal] 已取到最后一帧: %s（%dx%d，解码器 %s%s）"
+              % (filename, int(image.shape[2]), int(image.shape[1]), used,
+                 "，回退 %d 帧" % frame_offset if frame_offset else ""))
+
+        return (image, int(image.shape[0]), filename, info)
+
+    @staticmethod
+    def _empty_result(message, filename="", info=None):
+        """失败时返回结构完整的空结果，避免下游节点拿到 None 崩掉。"""
+        import torch
+        return (torch.zeros((1, 64, 64, 3), dtype=torch.float32), 0, filename,
+                dict(info or {}, error=message))
+
+    @staticmethod
+    def _step_back(source, trim_end, offset, decoder, timeout, fallback):
+        """从最后一帧往前退 offset 帧。
+
+        做法：把视频结尾的若干帧全部解出来，按顺序取倒数第 offset+1 张；
+        解不出来时退回原本的最后一帧。
+        """
+        try:
+            import av
+
+            frames = []
+            keep = offset + 1  # 只需要最后 (offset+1) 帧
+            with av.open(source, mode="r", **(dict(timeout=float(timeout)) if timeout else {})) as container:
+                if not container.streams.video:
+                    return fallback
+                if trim_end and trim_end > 0:
+                    try:
+                        container.seek(int(trim_end * av.time_base), backward=True)
+                    except Exception:
+                        pass
+                for frame in container.decode(video=0):
+                    frames.append(frame)
+                    if len(frames) > keep * 4:  # 滚动保留窗口，避免长视频占内存
+                        frames = frames[-keep:]
+            if len(frames) > offset:
+                target = frames[-(offset + 1)]
+                import numpy as np
+                import torch
+                array = np.asarray(target.to_image())
+                if array.ndim == 2:
+                    array = np.stack([array] * 3, axis=-1)
+                elif array.ndim == 3 and array.shape[2] == 4:
+                    array = array[:, :, :3]
+                return torch.from_numpy(array.astype(np.float32) / 255.0)[None,]
+        except Exception:
+            pass
+        return fallback
